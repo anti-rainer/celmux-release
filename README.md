@@ -34,7 +34,7 @@ sh uninstall.sh
 
 ## 支持
 
-每个 Release 只提供两个二进制资产：`linux/amd64` 与 `linux/arm64`。安装脚本、校验清单和法律文件保留在本仓库源码中，由安装器按版本读取。具体版本和校验值请以 [Releases](https://github.com/anti-rainer/celmux-release/releases) 页面为准。
+每个 Release 只提供两个二进制资产：`linux/amd64` 与 `linux/arm64`。安装脚本、校验清单和法律文件保留在本仓库源码中，由安装器按版本读取。具体版本请以 [Releases](https://github.com/anti-rainer/celmux-release/releases) 页面为准，校验值见 [`sha256sums.txt`](sha256sums.txt)。
 
 ## 安全与合规
 
