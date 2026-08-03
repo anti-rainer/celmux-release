@@ -4,13 +4,13 @@ Celmux 的公开发布与部署入口。这里提供稳定版本、安装入口�
 
 ## 安装
 
-以 root 执行以下命令。系统已有 `curl` 或 `wget` 均可，安装器会自动选择；支持 Debian/systemd 与 OpenWrt/procd。
+以 root 执行以下命令。安装前确保系统已有 `curl`；支持 Debian/systemd 与 OpenWrt/procd。
 
 ```sh
 curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sh
 ```
 
-普通 Debian 用户将末尾的 `sh` 改为 `sudo sh`；没有 `curl` 的 OpenWrt 可用 `wget -qO-` 替换前面的下载命令。
+普通 Debian 用户将末尾的 `sh` 改为 `sudo sh`。
 
 固定版本安装：
 
