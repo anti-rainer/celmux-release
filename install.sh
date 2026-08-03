@@ -216,25 +216,33 @@ latest_version() {
 download_installer() {
 	version="$1"
 	out="$2"
-	release_asset="https://github.com/${REPO}/releases/download/${version}/install-local.sh"
-	raw_tag="https://raw.githubusercontent.com/${REPO}/${version}/install-local.sh"
-	raw_main="https://raw.githubusercontent.com/${REPO}/main/install-local.sh"
-	source_raw_tag="https://raw.githubusercontent.com/${REPO}/${version}/scripts/install-local.sh"
-	source_raw_main="https://raw.githubusercontent.com/${REPO}/main/scripts/install-local.sh"
-	legacy_raw_tag="https://raw.githubusercontent.com/${REPO}/${version}/scripts/install-debian-binary.sh"
-	legacy_release_asset="https://github.com/${REPO}/releases/download/${version}/install-debian-binary.sh"
+	download_repository_file "$version" install-local.sh "$out"
+}
+
+download_repository_file() {
+	version="$1"
+	file="$2"
+	out="$3"
+	raw_main="https://raw.githubusercontent.com/${REPO}/main/${file}"
+	raw_tag="https://raw.githubusercontent.com/${REPO}/${version}/${file}"
+	source_raw_main="https://raw.githubusercontent.com/${REPO}/main/scripts/${file}"
+	source_raw_tag="https://raw.githubusercontent.com/${REPO}/${version}/scripts/${file}"
+	release_asset="https://github.com/${REPO}/releases/download/${version}/${file}"
+	legacy_file="https://github.com/${REPO}/releases/download/${version}/install-debian-binary.sh"
 
 	if try_download_candidates "$out" \
-		"$(accelerated_url "$release_asset")" "$release_asset" \
-		"$(accelerated_url "$raw_tag")" "$raw_tag" \
 		"$(accelerated_url "$raw_main")" "$raw_main" \
-		"$(accelerated_url "$source_raw_tag")" "$source_raw_tag" \
+		"$(accelerated_url "$raw_tag")" "$raw_tag" \
 		"$(accelerated_url "$source_raw_main")" "$source_raw_main" \
-		"$(accelerated_url "$legacy_raw_tag")" "$legacy_raw_tag" \
-		"$(accelerated_url "$legacy_release_asset")" "$legacy_release_asset"; then
+		"$(accelerated_url "$source_raw_tag")" "$source_raw_tag" \
+		"$(accelerated_url "$release_asset")" "$release_asset"; then
 		return
 	fi
-	die "unable to download installer script"
+	if [ "$file" = "install-local.sh" ] && try_download_candidates "$out" \
+		"$(accelerated_url "$legacy_file")" "$legacy_file"; then
+		return
+	fi
+	die "unable to download ${file} from ${REPO}"
 }
 
 download_release_asset() {
@@ -323,7 +331,7 @@ main() {
 	echo "Installing ${APP_NAME} ${VERSION} for linux/${arch} from ${REPO}"
 	download_release_asset "$VERSION" "$asset" "$binary"
 	chmod 0755 "$binary"
-	download_release_asset "$VERSION" sha256sums.txt "$checksums"
+	download_repository_file "$VERSION" sha256sums.txt "$checksums"
 	verify_release_asset "$checksums" "$binary" "$asset"
 
 	download_installer "$VERSION" "$installer"
@@ -331,7 +339,7 @@ main() {
 	verify_release_asset "$checksums" "$installer" "install-local.sh"
 
 	for legal_file in LICENSE NOTICE.md THIRD_PARTY_NOTICES.md DISCLAIMER.md; do
-		download_release_asset "$VERSION" "$legal_file" "${legal_dir}/${legal_file}"
+		download_repository_file "$VERSION" "$legal_file" "${legal_dir}/${legal_file}"
 		verify_release_asset "$checksums" "${legal_dir}/${legal_file}" "$legal_file"
 	done
 
