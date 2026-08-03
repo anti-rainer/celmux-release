@@ -223,6 +223,16 @@ download_repository_file() {
 	version="$1"
 	file="$2"
 	out="$3"
+	if try_download_repository_file "$version" "$file" "$out"; then
+		return
+	fi
+	die "unable to download ${file} from ${REPO}"
+}
+
+try_download_repository_file() {
+	version="$1"
+	file="$2"
+	out="$3"
 	raw_main="https://raw.githubusercontent.com/${REPO}/main/${file}"
 	raw_tag="https://raw.githubusercontent.com/${REPO}/${version}/${file}"
 	source_raw_main="https://raw.githubusercontent.com/${REPO}/main/scripts/${file}"
@@ -240,9 +250,18 @@ download_repository_file() {
 	fi
 	if [ "$file" = "install-local.sh" ] && try_download_candidates "$out" \
 		"$(accelerated_url "$legacy_file")" "$legacy_file"; then
+		return 0
+	fi
+	return 1
+}
+
+download_checksums() {
+	version="$1"
+	out="$2"
+	if try_download_repository_file "$version" "sha256sums-${version}.txt" "$out"; then
 		return
 	fi
-	die "unable to download ${file} from ${REPO}"
+	download_repository_file "$version" sha256sums.txt "$out"
 }
 
 download_release_asset() {
@@ -321,7 +340,7 @@ main() {
 	if [ -z "$VERSION" ]; then
 		VERSION="$(latest_version)"
 	fi
-	asset="celmux_${VERSION}_linux_${arch}"
+	asset="celmux_linux_${arch}"
 	binary="${tmpdir}/${asset}"
 	installer="${tmpdir}/install-local.sh"
 	checksums="${tmpdir}/sha256sums.txt"
@@ -331,7 +350,7 @@ main() {
 	echo "Installing ${APP_NAME} ${VERSION} for linux/${arch} from ${REPO}"
 	download_release_asset "$VERSION" "$asset" "$binary"
 	chmod 0755 "$binary"
-	download_repository_file "$VERSION" sha256sums.txt "$checksums"
+	download_checksums "$VERSION" "$checksums"
 	verify_release_asset "$checksums" "$binary" "$asset"
 
 	download_installer "$VERSION" "$installer"
