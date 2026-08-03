@@ -1,0 +1,5 @@
+# Release binaries are uploaded to GitHub Releases, not committed to git.
+/dist/
+*.tmp
+*.part
+
