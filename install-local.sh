@@ -27,7 +27,7 @@ LEGAL_SOURCE_EXPLICIT="${CELMUX_LEGAL_SOURCE_DIR:+yes}"
 usage() {
 	cat <<EOF
 Usage:
-  sh scripts/install-local.sh [path-to-celmux-binary]
+  sh install-local.sh [path-to-celmux-binary]
       [--migrate-vohive | --no-migrate-vohive]
 
 If no binary path is provided, the script auto-detects one from:

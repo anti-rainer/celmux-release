@@ -13,7 +13,7 @@ GITHUB_ACCELERATOR="${GITHUB_ACCELERATOR%/}"
 usage() {
 	cat <<EOF
 Usage:
-  sh scripts/install.sh [--version vX.Y.Z] [--repo owner/repo]
+  sh install.sh [--version vX.Y.Z] [--repo owner/repo]
       [--migrate-vohive | --no-migrate-vohive]
 
 Environment:

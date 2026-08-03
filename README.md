@@ -7,8 +7,10 @@ Celmux 的公开发布与部署入口。这里提供稳定版本、安装入口�
 以 root 执行以下命令。系统已有 `curl` 或 `wget` 均可，安装器会自动选择；支持 Debian/systemd 与 OpenWrt/procd。
 
 ```sh
-if command -v curl >/dev/null 2>&1; then curl -fsSL "https://gh-proxy.com/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh" || curl -fsSL "https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh"; else wget -qO- "https://gh-proxy.com/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh" || wget -qO- "https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh"; fi | if command -v sudo >/dev/null 2>&1; then sudo sh; else sh; fi
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sh
 ```
+
+普通 Debian 用户将末尾的 `sh` 改为 `sudo sh`；没有 `curl` 的 OpenWrt 可用 `wget -qO-` 替换前面的下载命令。
 
 固定版本安装：
 

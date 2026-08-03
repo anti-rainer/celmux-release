@@ -14,7 +14,7 @@ SERVICE_DROPIN_DIR="/etc/systemd/system/${SERVICE_NAME}.service.d"
 usage() {
 	cat <<EOF
 Usage:
-  sh scripts/uninstall.sh
+  sh uninstall.sh
 
 This removes all celmux-owned files:
   Binary:          ${INSTALL_BIN}
