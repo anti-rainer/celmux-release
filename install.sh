@@ -9,6 +9,17 @@ VERSION="${CELMUX_VERSION:-}"
 MIGRATE_VOHIVE="${CELMUX_MIGRATE_VOHIVE:-ask}"
 GITHUB_ACCELERATOR="${CELMUX_GITHUB_ACCELERATOR:-https://gh-proxy.com}"
 GITHUB_ACCELERATOR="${GITHUB_ACCELERATOR%/}"
+TOYBOX_VERSION="0.8.14"
+TOOLBOX=""
+TOOL_BIN=""
+
+# Toybox publishes statically linked, architecture-specific binaries. Keep
+# these URLs and hashes fixed so a missing host utility can be bootstrapped
+# without trusting a package mirror or copying anything into the host PATH.
+TOYBOX_AMD64_URL="https://landley.net/toybox/bin/toybox-x86_64"
+TOYBOX_AMD64_SHA256="836ba9d6821fb3bcd85f4e2c511115d677930796ef76418799e0df95526d4e65"
+TOYBOX_ARM64_URL="https://landley.net/toybox/bin/toybox-aarch64"
+TOYBOX_ARM64_SHA256="223b5ff5929371225d0bc62fb3b99a148692295fb6f85ad86bb924f689a55ea4"
 
 usage() {
 	cat <<EOF
@@ -97,46 +108,86 @@ detect_arch() {
 	esac
 }
 
+check_download_tool() {
+	command -v curl >/dev/null 2>&1 || die "curl is required to download the release"
+}
+
 check_bootstrap_tools() {
+	check_download_tool
 	command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
-	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-		die "curl or wget is required to download the release"
-	fi
 }
 
 fetch_stdout() {
 	url="$1"
-	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$url"
-	elif command -v wget >/dev/null 2>&1; then
-		wget -qO- "$url"
-	else
-		die "curl or wget is required"
-	fi
+	curl -fsSL "$url"
 }
 
 download() {
 	url="$1"
 	out="$2"
-	if command -v curl >/dev/null 2>&1; then
-		curl -fL --retry 3 --retry-delay 2 -o "$out" "$url"
-	elif command -v wget >/dev/null 2>&1; then
-		wget -O "$out" "$url"
-	else
-		die "curl or wget is required"
-	fi
+	curl -fL --retry 3 --retry-delay 2 -o "$out" "$url"
 }
 
 try_download() {
 	url="$1"
 	out="$2"
-	if command -v curl >/dev/null 2>&1; then
-		curl -fsL --retry 2 --retry-delay 1 -o "$out" "$url"
-	elif command -v wget >/dev/null 2>&1; then
-		wget -q -O "$out" "$url"
+	curl -fsL --retry 2 --retry-delay 1 -o "$out" "$url"
+}
+
+toolbox_metadata() {
+	arch="$1"
+	case "$arch" in
+		amd64)
+			TOYBOX_URL="$TOYBOX_AMD64_URL"
+			TOYBOX_SHA256="$TOYBOX_AMD64_SHA256"
+			;;
+		arm64)
+			TOYBOX_URL="$TOYBOX_ARM64_URL"
+			TOYBOX_SHA256="$TOYBOX_ARM64_SHA256"
+			;;
+		*)
+			die "no static installer helper is available for linux/${arch}"
+			;;
+	esac
+}
+
+download_toolbox() {
+	arch="$1"
+	tool_dir="$2"
+	toolbox_metadata "$arch"
+	TOOL_BIN="${tool_dir}/bin"
+	TOOLBOX="${tool_dir}/toybox-${arch}"
+	mkdir -p "$TOOL_BIN"
+	echo "downloading Toybox ${TOYBOX_VERSION} installer helper for linux/${arch}"
+	curl -fL --retry 3 --retry-delay 2 -o "$TOOLBOX" "$TOYBOX_URL" ||
+		die "unable to download static installer helper for linux/${arch}"
+	chmod 0755 "$TOOLBOX"
+
+	if command -v sha256sum >/dev/null 2>&1; then
+		actual="$(sha256sum "$TOOLBOX" | awk '{print $1}')"
 	else
-		return 1
+		# This is only a bootstrap path: TLS plus the embedded digest protects
+		# the official helper before it supplies the missing hash command.
+		actual="$("$TOOLBOX" sha256sum "$TOOLBOX" | awk '{print $1}')"
 	fi
+	[ "$actual" = "$TOYBOX_SHA256" ] || die "static installer helper checksum verification failed"
+
+	for applet in sha256sum od; do
+		if ! command -v "$applet" >/dev/null 2>&1; then
+			ln -s "$TOOLBOX" "$TOOL_BIN/$applet"
+		fi
+	done
+	PATH="${TOOL_BIN}:${PATH}"
+	export PATH
+}
+
+install_missing_tools() {
+	arch="$1"
+	tool_dir="$2"
+	if command -v sha256sum >/dev/null 2>&1 && command -v od >/dev/null 2>&1; then
+		return 0
+	fi
+	download_toolbox "$arch" "$tool_dir"
 }
 
 accelerated_url() {
@@ -249,19 +300,20 @@ main() {
 			;;
 		procd)
 			echo "detected OpenWrt/procd"
-			;;
+		;;
 	esac
 
+	check_download_tool
+	arch="$(detect_arch)"
+	tmpdir="$(mktemp -d)"
+	trap 'rm -rf "$tmpdir"' EXIT INT TERM
+	install_missing_tools "$arch" "${tmpdir}/tools"
 	check_bootstrap_tools
 
 	if [ -z "$VERSION" ]; then
 		VERSION="$(latest_version)"
 	fi
-	arch="$(detect_arch)"
 	asset="celmux_${VERSION}_linux_${arch}"
-	tmpdir="$(mktemp -d)"
-	trap 'rm -rf "$tmpdir"' EXIT INT TERM
-
 	binary="${tmpdir}/${asset}"
 	installer="${tmpdir}/install-local.sh"
 	checksums="${tmpdir}/sha256sums.txt"

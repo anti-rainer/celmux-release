@@ -23,6 +23,17 @@ LEGACY_CONFIG=""
 BINARY_ARG=""
 LEGAL_SOURCE_DIR="${CELMUX_LEGAL_SOURCE_DIR:-}"
 LEGAL_SOURCE_EXPLICIT="${CELMUX_LEGAL_SOURCE_DIR:+yes}"
+TOYBOX_VERSION="0.8.14"
+TOOLBOX=""
+TOOL_BIN=""
+
+# Toybox publishes statically linked, architecture-specific binaries. Keep
+# these URLs and hashes fixed so a missing host utility can be bootstrapped
+# without trusting a package mirror or copying anything into the host PATH.
+TOYBOX_AMD64_URL="https://landley.net/toybox/bin/toybox-x86_64"
+TOYBOX_AMD64_SHA256="836ba9d6821fb3bcd85f4e2c511115d677930796ef76418799e0df95526d4e65"
+TOYBOX_ARM64_URL="https://landley.net/toybox/bin/toybox-aarch64"
+TOYBOX_ARM64_SHA256="223b5ff5929371225d0bc62fb3b99a148692295fb6f85ad86bb924f689a55ea4"
 
 usage() {
 	cat <<EOF
@@ -89,6 +100,63 @@ detect_arch() {
 			die "unsupported architecture: $(uname -m)"
 			;;
 	esac
+}
+
+toolbox_metadata() {
+	arch="$1"
+	case "$arch" in
+		amd64)
+			TOYBOX_URL="$TOYBOX_AMD64_URL"
+			TOYBOX_SHA256="$TOYBOX_AMD64_SHA256"
+			;;
+		arm64)
+			TOYBOX_URL="$TOYBOX_ARM64_URL"
+			TOYBOX_SHA256="$TOYBOX_ARM64_SHA256"
+			;;
+		*)
+			die "no static installer helper is available for linux/${arch}"
+			;;
+	esac
+}
+
+download_toolbox() {
+	arch="$1"
+	tool_dir="$2"
+	toolbox_metadata "$arch"
+	TOOL_BIN="${tool_dir}/bin"
+	TOOLBOX="${tool_dir}/toybox-${arch}"
+	mkdir -p "$TOOL_BIN"
+	echo "downloading Toybox ${TOYBOX_VERSION} installer helper for linux/${arch}"
+	command -v curl >/dev/null 2>&1 || die "curl is required to download the installer helper"
+	curl -fL --retry 3 --retry-delay 2 -o "$TOOLBOX" "$TOYBOX_URL" ||
+		die "unable to download static installer helper for linux/${arch}"
+	chmod 0755 "$TOOLBOX"
+
+	if command -v sha256sum >/dev/null 2>&1; then
+		actual="$(sha256sum "$TOOLBOX" | awk '{print $1}')"
+	else
+		# This is only a bootstrap path: TLS plus the embedded digest protects
+		# the official helper before it supplies the missing hash command.
+		actual="$("$TOOLBOX" sha256sum "$TOOLBOX" | awk '{print $1}')"
+	fi
+	[ "$actual" = "$TOYBOX_SHA256" ] || die "static installer helper checksum verification failed"
+
+	for applet in sha256sum od; do
+		if ! command -v "$applet" >/dev/null 2>&1; then
+			ln -s "$TOOLBOX" "$TOOL_BIN/$applet"
+		fi
+	done
+	PATH="${TOOL_BIN}:${PATH}"
+	export PATH
+}
+
+install_missing_tools() {
+	arch="$1"
+	tool_dir="$2"
+	if command -v od >/dev/null 2>&1; then
+		return 0
+	fi
+	download_toolbox "$arch" "$tool_dir"
 }
 
 parse_args() {
@@ -299,7 +367,7 @@ migrate_legacy_database() {
 			return 1
 		fi
 	else
-		# OpenWrt does not ship sqlite3-cli by default. The legacy service is
+		# Minimal OpenWrt images may not ship a sqlite3 command. The legacy service is
 		# stopped before this copy, so carrying the WAL sidecars preserves a
 		# recoverable SQLite snapshot without adding a runtime dependency.
 		if ! cp "$LEGACY_DB" "$tmp_db"; then
@@ -374,7 +442,7 @@ write_default_config() {
 		return
 	fi
 
-	initial_password="$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')"
+	initial_password="$(od -An -N18 -tx1 /dev/urandom | awk '{for (i = 1; i <= NF; i++) printf "%s", $i}')"
 	[ -n "$initial_password" ] || die "failed to generate initial admin password"
 	cat > "$CONFIG_FILE" <<EOF
 server:
@@ -492,6 +560,10 @@ main() {
 	parse_args "$@"
 	require_root
 	detect_init_system
+	arch="$(detect_arch)"
+	tool_dir="$(mktemp -d)"
+	trap 'rm -rf "$tool_dir"' EXIT INT TERM
+	install_missing_tools "$arch" "$tool_dir"
 	binary_path="$(find_binary "$BINARY_ARG")"
 
 	if [ "$INIT_SYSTEM" = "procd" ]; then
