@@ -1,6 +1,6 @@
 #!/bin/sh
 # Celmux uninstaller. Copyright 2026 anti-rainer.
-# Usage: curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo bash
+# Usage: curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo bash
 set -eu
 
 APP_NAME="celmux"
