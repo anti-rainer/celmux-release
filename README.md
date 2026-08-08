@@ -1,6 +1,6 @@
 # Celmux
 
-Celmux 的公开二进制发布入口。源码由维护者在私有仓库中管理，本仓库分支只保留发布说明、安全策略和法律文件。
+Celmux 的公开二进制发布入口。源码由维护者在私有仓库中管理，本仓库保留发布说明、静态安装/卸载脚本、安全策略和法律文件。
 
 ## 下载
 
@@ -23,11 +23,41 @@ chmod +x celmux_linux_amd64
 ./celmux_linux_amd64 -c /path/to/celmux.yaml
 ```
 
-ARM64 主机将文件名替换为 `celmux_linux_arm64`。本仓库不提供安装、卸载或在线更新脚本。
+ARM64 主机将文件名替换为 `celmux_linux_arm64`。
+
+## 一键安装
+
+支持 Linux `amd64`、`arm64`，以及 systemd、OpenRC、OpenWrt procd、SysVinit 和 Android root service.d。默认安装路径为 `/opt/celmux`。安装器从最新 Release 下载对应二进制，校验 GitHub Release API 提供的 SHA-256，并写入对应系统的服务入口。安装脚本是本仓库维护的静态文件，不属于 Release 资产。
+
+```sh
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash
+```
+
+安装指定版本：
+
+```sh
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash -s -- --version 0.0.2
+```
+
+下载默认先尝试 `ghfast.top`，失败后回退 GitHub 直连；可设置 `CELMUX_GITHUB_ACCELERATOR=` 禁用加速。首次启动由二进制创建 `celmux.yaml`；同目录存在旧 `config.yaml` 时，只导入支持的可见配置。
+
+## 一键卸载
+
+普通卸载会停止并移除 Celmux 服务和二进制，保留配置、数据库和日志：
+
+```sh
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo bash
+```
+
+确认删除 `/opt/celmux` 下全部配置和数据：
+
+```sh
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo bash -s -- --purge --yes
+```
 
 ## 发布标签
 
-新发布使用 `release-*` 标签；后缀由维护者自行定义，不采用自动递增的语义版本号。
+新发布使用数字 `X.Y.Z` 标签；发布仓库只在 Release 中保存两个二进制资产，安装/卸载脚本和文档由本仓库分支单独维护。
 
 ## 安全与许可
 
