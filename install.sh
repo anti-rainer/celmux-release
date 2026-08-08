@@ -17,6 +17,9 @@ GITHUB_ACCELERATOR="${GITHUB_ACCELERATOR%/}"
 INIT_SYSTEM=""
 SERVICE_FILE=""
 IS_ANDROID=0
+DEFAULT_PORT=7575
+CONFIG_WAS_PRESENT=0
+LEGACY_CONFIG_WAS_PRESENT=0
 
 usage() {
 	cat <<EOF
@@ -156,6 +159,53 @@ copy_binary() {
 		chmod 0750 "${dst}.new"
 	fi
 	mv -f "${dst}.new" "$dst"
+}
+
+read_config_value() {
+	section="$1"
+	key="$2"
+	[ -f "$CONFIG_FILE" ] || return 0
+	awk -v section="$section" -v key="$key" '
+		$0 ~ "^" section ":[[:space:]]*$" { inside=1; next }
+		inside && $0 !~ /^[[:space:]]/ { inside=0 }
+		inside && $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
+			sub("^[[:space:]]*" key ":[[:space:]]*", "")
+			print
+			exit
+		}
+	' "$CONFIG_FILE" | tr -d '[:space:]"'
+}
+
+show_install_info() {
+	display_port="$DEFAULT_PORT"
+	display_username="admin"
+	if [ -f "$CONFIG_FILE" ]; then
+		configured_port="$(read_config_value server port)"
+		configured_username="$(read_config_value web username)"
+		[ -n "$configured_port" ] && display_port="${configured_port#:}"
+		[ -n "$configured_username" ] && display_username="$configured_username"
+	fi
+
+	echo
+	echo "=========================================="
+	echo "  celmux 安装完成"
+	echo "=========================================="
+	echo "安装路径: ${INSTALL_ROOT}"
+	echo "二进制:   ${INSTALL_BIN}"
+	echo "配置文件: ${CONFIG_FILE}"
+	echo "访问地址: http://0.0.0.0:${display_port}"
+	echo "登录账号: ${display_username}"
+	if [ "$CONFIG_WAS_PRESENT" -eq 0 ] && [ "$LEGACY_CONFIG_WAS_PRESENT" -eq 0 ]; then
+		echo "登录密码: admin"
+	else
+		echo "登录密码: 沿用现有配置（安装器不会显示已有密码）"
+	fi
+case "$INIT_SYSTEM" in
+	systemd) echo "服务管理: systemctl status ${SERVICE_NAME}" ;;
+	procd|openrc|sysvinit) echo "服务管理: ${SERVICE_FILE} status" ;;
+	android) echo "服务管理: ${SERVICE_FILE} status" ;;
+	unknown) echo "服务管理: 未检测到标准服务管理器，请手动启动" ;;
+esac
 }
 
 detect_init_system() {
@@ -421,6 +471,8 @@ main() {
 	command -v curl >/dev/null 2>&1 || die "curl is required"
 	command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 	ARCH="$(detect_arch)"
+	[ -e "$CONFIG_FILE" ] && CONFIG_WAS_PRESENT=1
+	[ -e "${CONFIG_DIR}/config.yaml" ] && LEGACY_CONFIG_WAS_PRESENT=1
 	if [ -z "$VERSION" ]; then
 		resolve_latest_version
 	fi
@@ -443,11 +495,7 @@ main() {
 	copy_binary "$BINARY_PATH" "$INSTALL_BIN"
 	write_service
 	start_service
-
-	echo "celmux installed: ${INSTALL_BIN}"
-	echo "config: ${CONFIG_FILE}"
-	echo "service: ${SERVICE_FILE}"
-	echo "If config.yaml exists beside celmux.yaml, the binary will import only supported visible settings on first start."
+	show_install_info
 }
 
 main "$@"

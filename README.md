@@ -39,7 +39,7 @@ curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/anti-rainer/cel
 curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash -s -- --version 0.0.2
 ```
 
-下载默认先尝试 `ghproxy.net`，失败后回退 GitHub 直连；可设置 `CELMUX_GITHUB_ACCELERATOR=` 禁用加速。首次启动由二进制创建 `celmux.yaml`；同目录存在旧 `config.yaml` 时，只导入支持的可见配置。
+下载默认先尝试 `ghproxy.net`，失败后回退 GitHub 直连；可设置 `CELMUX_GITHUB_ACCELERATOR=` 禁用加速。首次启动由二进制创建 `celmux.yaml`；同目录存在旧 `config.yaml` 时，只导入支持的可见配置。全新安装完成时，脚本会显示安装路径、`http://0.0.0.0:7575`、`admin` 和初始密码 `admin`；已有配置时密码沿用原值，不会被脚本覆盖或回显。
 
 ## 一键卸载
 
