@@ -8,9 +8,9 @@ Celmux 是独立维护的 VoHive 派生项目。项目并非原 VoHive 作者的
 
 > Required Notice: Copyright iniwex5 (https://github.com/iniwex5/vohive)
 
-Celmux 新增和修改的部分由 Celmux contributors 维护，版权声明为：
+Celmux 新增和修改部分的版权归 anti-rainer，版权声明为：
 
-> Required Notice: Celmux modifications Copyright 2026 Celmux contributors (https://github.com/anti-rainer/celmux-release)
+> Required Notice: Celmux modifications Copyright 2026 anti-rainer (https://github.com/anti-rainer/celmux-release)
 
 上述两条声明分别对应不同来源的代码，不表示 Celmux 对原 VoHive 代码拥有独立的商业授权或商标权。
 
