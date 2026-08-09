@@ -1,6 +1,6 @@
 #!/bin/sh
 # Celmux installer. Copyright 2026 anti-rainer.
-# Usage: curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash
+# Usage: curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash
 set -eu
 umask 077
 
@@ -12,7 +12,7 @@ INSTALL_ROOT="${CELMUX_INSTALL_ROOT:-/opt/celmux}"
 INSTALL_BIN="${INSTALL_ROOT}/bin/${APP_NAME}"
 CONFIG_DIR="${INSTALL_ROOT}/config"
 CONFIG_FILE="${CONFIG_DIR}/celmux.yaml"
-GITHUB_ACCELERATOR="${CELMUX_GITHUB_ACCELERATOR:-https://ghproxy.net}"
+GITHUB_ACCELERATOR="${CELMUX_GITHUB_ACCELERATOR:-https://gh-proxy.org}"
 GITHUB_ACCELERATOR="${GITHUB_ACCELERATOR%/}"
 INIT_SYSTEM=""
 SERVICE_FILE=""
