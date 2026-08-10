@@ -1,6 +1,6 @@
 #!/bin/sh
 # Celmux installer. Copyright 2026 anti-rainer.
-# Usage: curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash
+# Usage: curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo sh
 set -eu
 umask 077
 
@@ -12,10 +12,13 @@ INSTALL_ROOT="${CELMUX_INSTALL_ROOT:-/opt/celmux}"
 INSTALL_BIN="${INSTALL_ROOT}/bin/${APP_NAME}"
 CONFIG_DIR="${INSTALL_ROOT}/config"
 CONFIG_FILE="${CONFIG_DIR}/celmux.yaml"
-GITHUB_ACCELERATOR="${CELMUX_GITHUB_ACCELERATOR:-https://gh-proxy.org}"
+# Use the default only when the variable is unset. An explicitly empty value
+# disables the asset accelerator.
+GITHUB_ACCELERATOR="${CELMUX_GITHUB_ACCELERATOR-https://gh-proxy.org}"
 GITHUB_ACCELERATOR="${GITHUB_ACCELERATOR%/}"
 INIT_SYSTEM=""
 SERVICE_FILE=""
+SERVICE_RUNNER="${INSTALL_ROOT}/bin/${APP_NAME}-run"
 IS_ANDROID=0
 DEFAULT_PORT=7575
 CONFIG_WAS_PRESENT=0
@@ -30,7 +33,7 @@ Environment:
   CELMUX_VERSION             Release tag. Defaults to the latest release.
   CELMUX_RELEASE_REPO       Release repository. Defaults to ${REPO}.
   CELMUX_INSTALL_ROOT        Install root. Defaults to ${INSTALL_ROOT}.
-  CELMUX_GITHUB_ACCELERATOR  Optional GitHub proxy. Empty disables the proxy.
+  CELMUX_GITHUB_ACCELERATOR  Optional GitHub asset proxy. Empty disables the proxy.
 EOF
 }
 
@@ -50,7 +53,7 @@ validate_install_root() {
 }
 
 require_root() {
-	[ "$(id -u)" -eq 0 ] || die "please run this installer as root, for example: curl ... | sudo bash"
+	[ "$(id -u)" -eq 0 ] || die "please run this installer as root, for example: curl ... | sudo sh"
 }
 
 detect_arch() {
@@ -63,7 +66,7 @@ detect_arch() {
 
 is_openwrt() {
 	[ -f /etc/openwrt_release ] || [ -f /etc/openwrt_version ] ||
-		{ [ -x /sbin/procd ] && [ -f /lib/functions/procd.sh ]; }
+		{ [ -x /sbin/procd ] && [ -x /etc/rc.common ] && [ -f /lib/functions/procd.sh ]; }
 }
 
 detect_environment() {
@@ -100,23 +103,33 @@ validate_version() {
 
 fetch_api() {
 	url="$1"
-	if [ -n "$GITHUB_ACCELERATOR" ] && curl -fsSL --retry 2 --retry-delay 1 \
-		--connect-timeout 15 -H 'Accept: application/vnd.github+json' \
-		"${GITHUB_ACCELERATOR}/${url}"; then
-		return 0
-	fi
 	curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 \
-		-H 'Accept: application/vnd.github+json' "$url"
+		-A 'celmux-installer/1.0' \
+		-H 'Accept: application/vnd.github+json' \
+		-H 'X-GitHub-Api-Version: 2022-11-28' "$url"
 }
 
 download() {
 	url="$1"
 	out="$2"
-	if [ -n "$GITHUB_ACCELERATOR" ] && curl -fsSL --retry 2 --retry-delay 1 \
-		--connect-timeout 15 -o "$out" "${GITHUB_ACCELERATOR}/${url}"; then
+	proxy_out="${out}.proxy"
+	error_detail="GitHub direct request failed"
+	if [ -n "$GITHUB_ACCELERATOR" ]; then
+		error_detail="proxy and GitHub direct requests failed"
+		if curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 15 \
+			-A 'celmux-installer/1.0' -o "$proxy_out" \
+			"${GITHUB_ACCELERATOR}/${url}" 2>/dev/null; then
+			mv -f "$proxy_out" "$out"
+			return 0
+		fi
+		rm -f "$proxy_out"
+	fi
+	if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 \
+		-A 'celmux-installer/1.0' -o "$out" "$url" 2>/dev/null; then
 		return 0
 	fi
-	curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 -o "$out" "$url"
+	rm -f "$out"
+	die "unable to download release asset (${error_detail}): $url"
 }
 
 resolve_latest_version() {
@@ -218,6 +231,9 @@ detect_init_system() {
 	if is_openwrt; then
 		[ -x /etc/rc.common ] || die "OpenWrt rc.common was not found"
 		[ -d /etc/init.d ] || die "OpenWrt init directory was not found"
+		[ -f /lib/functions/procd.sh ] || die "OpenWrt procd.sh was not found"
+		[ -x /sbin/procd ] || die "OpenWrt procd was not found"
+		[ -x /sbin/ubus ] || command -v ubus >/dev/null 2>&1 || die "OpenWrt ubus is required for procd service management"
 		INIT_SYSTEM=procd
 		SERVICE_FILE="/etc/init.d/${SERVICE_NAME}"
 		return
@@ -285,6 +301,22 @@ EOF
 	chmod 0644 "$SERVICE_FILE"
 }
 
+write_procd_runner() {
+	cat > "$SERVICE_RUNNER" <<EOF
+#!/bin/sh
+set -eu
+umask 077
+
+CELMUX_DIR="${INSTALL_ROOT}"
+CELMUX_BIN="${INSTALL_BIN}"
+CELMUX_CONFIG="${CONFIG_FILE}"
+
+cd "\$CELMUX_DIR"
+exec "\$CELMUX_BIN" -c "\$CELMUX_CONFIG" "\$@"
+EOF
+	chmod 0750 "$SERVICE_RUNNER"
+}
+
 write_procd_service() {
 	cat > "$SERVICE_FILE" <<EOF
 #!/bin/sh /etc/rc.common
@@ -293,15 +325,14 @@ USE_PROCD=1
 START=99
 STOP=10
 
-PROG="${INSTALL_BIN}"
+PROG="${SERVICE_RUNNER}"
 CONFIG="${CONFIG_FILE}"
 WORK_DIR="${INSTALL_ROOT}"
 
 start_service() {
 	procd_open_instance
-	procd_set_param command "\$PROG" -c "\$CONFIG"
+	procd_set_param command "\$PROG"
 	procd_set_param env "CONFIG_PATH=\$CONFIG" "HOME=\$WORK_DIR" "GODEBUG=madvdontneed=1" "GOMEMLIMIT=72MiB"
-	procd_set_param cwd "\$WORK_DIR"
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
@@ -419,12 +450,25 @@ EOF
 write_service() {
 	case "$INIT_SYSTEM" in
 		systemd) write_systemd_service ;;
-		procd) write_procd_service ;;
+		procd)
+			write_procd_runner
+			write_procd_service
+			;;
 		openrc) write_openrc_service ;;
 		sysvinit) write_sysvinit_service ;;
 		android) write_android_service ;;
 		unknown) ;;
 		*) die "unsupported init system: $INIT_SYSTEM" ;;
+	esac
+}
+
+stop_existing_service() {
+	case "$INIT_SYSTEM" in
+		procd)
+			if [ -x "$SERVICE_FILE" ]; then
+				"$SERVICE_FILE" stop >/dev/null 2>&1 || true
+			fi
+			;;
 	esac
 }
 
@@ -436,8 +480,31 @@ start_service() {
 			systemctl restart "$SERVICE_NAME.service"
 			;;
 		procd)
-			"$SERVICE_FILE" enable
-			"$SERVICE_FILE" restart
+			if ! "$SERVICE_FILE" enable; then
+				echo "error: failed to enable OpenWrt service ${SERVICE_NAME}" >&2
+				echo "check: ${SERVICE_FILE} and logread -e ${SERVICE_NAME}" >&2
+				exit 1
+			fi
+			if ! "$SERVICE_FILE" restart; then
+				echo "error: failed to start OpenWrt service ${SERVICE_NAME}" >&2
+				echo "check: ${SERVICE_FILE} status; logread -e ${SERVICE_NAME}" >&2
+				exit 1
+			fi
+			service_ready=0
+			attempt=0
+			while [ "$attempt" -lt 5 ]; do
+				if "$SERVICE_FILE" status >/dev/null 2>&1; then
+					service_ready=1
+					break
+				fi
+				attempt=$((attempt + 1))
+				[ "$attempt" -ge 5 ] || sleep 1
+			done
+			if [ "$service_ready" -ne 1 ]; then
+				echo "error: OpenWrt service ${SERVICE_NAME} is not running after restart" >&2
+				echo "check: ${SERVICE_FILE} status; logread -e ${SERVICE_NAME}" >&2
+				exit 1
+			fi
 			;;
 		openrc)
 			rc-update add "$SERVICE_NAME" default
@@ -492,6 +559,7 @@ main() {
 
 	mkdir -p "${INSTALL_ROOT}/bin" "$CONFIG_DIR" "${INSTALL_ROOT}/data" "${INSTALL_ROOT}/logs"
 	chmod 0750 "$INSTALL_ROOT" "${INSTALL_ROOT}/bin" "$CONFIG_DIR" "${INSTALL_ROOT}/data" "${INSTALL_ROOT}/logs"
+	stop_existing_service
 	copy_binary "$BINARY_PATH" "$INSTALL_BIN"
 	write_service
 	start_service

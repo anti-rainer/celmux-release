@@ -1,11 +1,12 @@
 #!/bin/sh
 # Celmux uninstaller. Copyright 2026 anti-rainer.
-# Usage: curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo bash
+# Usage: curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo sh
 set -eu
 
 APP_NAME="celmux"
 SERVICE_NAME="celmux"
 INSTALL_ROOT="${CELMUX_INSTALL_ROOT:-/opt/celmux}"
+SERVICE_RUNNER="${INSTALL_ROOT}/bin/${APP_NAME}-run"
 PURGE=0
 ASSUME_YES=0
 INIT_SYSTEM=""
@@ -38,7 +39,7 @@ validate_install_root() {
 
 is_openwrt() {
 	[ -f /etc/openwrt_release ] || [ -f /etc/openwrt_version ] ||
-		{ [ -x /sbin/procd ] && [ -f /lib/functions/procd.sh ]; }
+		{ [ -x /sbin/procd ] && [ -x /etc/rc.common ] && [ -f /lib/functions/procd.sh ]; }
 }
 
 parse_args() {
@@ -61,7 +62,7 @@ parse_args() {
 }
 
 require_root() {
-	[ "$(id -u)" -eq 0 ] || die "please run this uninstaller as root, for example: curl ... | sudo bash -s -- --purge --yes"
+	[ "$(id -u)" -eq 0 ] || die "please run this uninstaller as root, for example: curl ... | sudo sh -s -- --purge --yes"
 }
 
 detect_init_system() {
@@ -70,14 +71,14 @@ detect_init_system() {
 		SERVICE_FILE="/data/adb/service.d/${SERVICE_NAME}.sh"
 		return
 	fi
+	if is_openwrt; then
+		INIT_SYSTEM=procd
+		SERVICE_FILE="/etc/init.d/${SERVICE_NAME}"
+		return
+	fi
 	if command -v systemctl >/dev/null 2>&1 && [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
 		INIT_SYSTEM=systemd
 		SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-		return
-	fi
-	if is_openwrt && [ -x "/etc/init.d/${SERVICE_NAME}" ]; then
-		INIT_SYSTEM=procd
-		SERVICE_FILE="/etc/init.d/${SERVICE_NAME}"
 		return
 	fi
 	if command -v rc-service >/dev/null 2>&1 && [ -x "/etc/init.d/${SERVICE_NAME}" ]; then
@@ -104,8 +105,14 @@ stop_service() {
 			"$SERVICE_FILE" stop >/dev/null 2>&1 || true
 			;;
 		procd)
-			"$SERVICE_FILE" stop >/dev/null 2>&1 || true
-			"$SERVICE_FILE" disable >/dev/null 2>&1 || true
+			if [ -x "$SERVICE_FILE" ]; then
+				"$SERVICE_FILE" stop >/dev/null 2>&1 || true
+				"$SERVICE_FILE" disable >/dev/null 2>&1 || true
+			fi
+			for link in /etc/rc.d/S??${SERVICE_NAME} /etc/rc.d/K??${SERVICE_NAME}; do
+				[ -e "$link" ] || [ -L "$link" ] || continue
+				rm -f "$link"
+			done
 			;;
 		systemd)
 			systemctl_quiet stop "${SERVICE_NAME}.service"
@@ -156,6 +163,7 @@ remove_files() {
 		return
 	fi
 	rm -f "${INSTALL_ROOT}/bin/${APP_NAME}"
+	rm -f "$SERVICE_RUNNER"
 	rmdir "${INSTALL_ROOT}/bin" 2>/dev/null || true
 }
 

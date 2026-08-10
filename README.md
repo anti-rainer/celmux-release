@@ -27,32 +27,53 @@ ARM64 主机将文件名替换为 `celmux_linux_arm64`。
 
 ## 一键安装
 
-支持 Linux `amd64`、`arm64`，以及 systemd、OpenRC、OpenWrt procd、SysVinit 和 Android root service.d。默认安装路径为 `/opt/celmux`。安装器从最新 Release 下载对应二进制，校验 GitHub Release API 提供的 SHA-256，并写入对应系统的服务入口。安装脚本是本仓库维护的静态文件，不属于 Release 资产。
+支持 Linux `amd64`、`arm64`，以及 systemd、OpenRC、OpenWrt 25.12+ procd、SysVinit 和 Android root service.d。默认安装路径为 `/opt/celmux`。安装器直连 GitHub Release API 获取版本和 SHA-256，下载二进制时默认先尝试 `gh-proxy.org`，失败后自动回退 GitHub 直连，并写入对应系统的服务入口。安装脚本是本仓库维护的静态文件，不属于 Release 资产。
 
 ```sh
-curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo sh
 ```
 
 安装指定版本：
 
 ```sh
-curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo bash -s -- --version 0.0.2
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo sh -s -- --version 0.0.2
 ```
 
-下载默认先尝试 `gh-proxy.org`，失败后回退 GitHub 直连；可设置 `CELMUX_GITHUB_ACCELERATOR=` 禁用加速。首次启动由二进制创建 `celmux.yaml`；同目录存在旧 `config.yaml` 时，只导入支持的可见配置。全新安装完成时，脚本会显示安装路径、`http://0.0.0.0:7575`、`admin` 和初始密码 `admin`；已有配置时密码沿用原值，不会被脚本覆盖或回显。
+OpenWrt 25.12+ 请使用 root shell 执行（系统通常只有 BusyBox `sh`，不需要 `sudo`）：
+
+```sh
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sh
+```
+
+OpenWrt 安装器会生成 `/etc/init.d/celmux`，通过 procd 管理自启动、崩溃重启和日志；运行目录为安装目录（默认 `/opt/celmux`），因此 `data/`、`logs/` 等相对路径可正常工作。服务常用命令：
+
+```sh
+/etc/init.d/celmux status
+/etc/init.d/celmux restart
+logread -e celmux -f
+```
+
+可设置 `CELMUX_GITHUB_ACCELERATOR=` 禁用二进制下载加速。首次启动由二进制创建 `celmux.yaml`；同目录存在旧 `config.yaml` 时，只导入支持的可见配置。全新安装完成时，脚本会显示安装路径、`http://0.0.0.0:7575`、`admin` 和初始密码 `admin`；已有配置时密码沿用原值，不会被脚本覆盖或回显。
 
 ## 一键卸载
 
 普通卸载会停止并移除 Celmux 服务和二进制，保留配置、数据库和日志：
 
 ```sh
-curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo bash
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo sh
 ```
 
 确认删除 `/opt/celmux` 下全部配置和数据：
 
 ```sh
-curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo bash -s -- --purge --yes
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo sh -s -- --purge --yes
+```
+
+OpenWrt root shell 的卸载命令（普通卸载或彻底清理）不需要 `sudo`：
+
+```sh
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sh
+curl -fsSL https://gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sh -s -- --purge --yes
 ```
 
 ## 发布标签
