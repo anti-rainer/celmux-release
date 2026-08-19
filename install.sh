@@ -1,6 +1,6 @@
 #!/bin/sh
 # Celmux installer. Copyright 2026 anti-rainer.
-# Usage: curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo sh
+# Usage: curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo sh
 set -eu
 umask 077
 
@@ -14,7 +14,7 @@ CONFIG_DIR="${INSTALL_ROOT}/config"
 CONFIG_FILE="${CONFIG_DIR}/celmux.yaml"
 # Use the default only when the variable is unset. An explicitly empty value
 # disables the asset accelerator.
-GITHUB_ACCELERATOR="${CELMUX_GITHUB_ACCELERATOR-https://ghfast.top}"
+GITHUB_ACCELERATOR="${CELMUX_GITHUB_ACCELERATOR-https://v6.gh-proxy.org}"
 GITHUB_ACCELERATOR="${GITHUB_ACCELERATOR%/}"
 INIT_SYSTEM=""
 SERVICE_FILE=""
