@@ -114,18 +114,31 @@ download() {
 	out="$2"
 	proxy_out="${out}.proxy"
 	error_detail="GitHub direct request failed"
+	download_asset() {
+		asset_url="$1"
+		asset_path="$2"
+		asset_label="$3"
+		echo "下载 ${asset_label}"
+		echo "地址: ${asset_url}"
+		# Keep curl's progress bar visible while printing size, duration and
+		# average speed after completion. The output file is still replaced
+		# atomically by the caller after a successful transfer.
+		curl --fail --location --retry 2 --retry-delay 1 --connect-timeout 15 \
+			-A 'celmux-installer/1.0' --progress-bar \
+			-o "$asset_path" \
+			-w '\n完成: %{size_download} bytes, %{speed_download} B/s, %{time_total}s\n' \
+			"$asset_url"
+	}
 	if [ -n "$GITHUB_ACCELERATOR" ]; then
 		error_detail="proxy and GitHub direct requests failed"
-		if curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 15 \
-			-A 'celmux-installer/1.0' -o "$proxy_out" \
-			"${GITHUB_ACCELERATOR}/${url}" 2>/dev/null; then
+		if download_asset "${GITHUB_ACCELERATOR}/${url}" "$proxy_out" "发布文件（加速下载）"; then
 			mv -f "$proxy_out" "$out"
 			return 0
 		fi
 		rm -f "$proxy_out"
+		echo "加速下载失败，正在回退 GitHub 直连..." >&2
 	fi
-	if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 \
-		-A 'celmux-installer/1.0' -o "$out" "$url" 2>/dev/null; then
+	if download_asset "$url" "$out" "发布文件（GitHub 直连）"; then
 		return 0
 	fi
 	rm -f "$out"
