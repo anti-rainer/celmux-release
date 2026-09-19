@@ -30,11 +30,16 @@ if not exist "%CELMUX_BINDING%" (
 rem Continue in an elevated window unless this one already is one. The check is
 rem the same one the binding script makes, so declining the prompt is reported
 rem by that script rather than twice.
+rem The arguments are carried over, so install-driver.bat -Preview previews in
+rem the elevated window instead of installing for real.
+set "CELMUX_ELEVATE="
+if not "%~1"=="" set "CELMUX_ELEVATE=-ArgumentList '%*'"
+
 powershell -NoProfile -ExecutionPolicy Bypass -Command "if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }"
 if errorlevel 1 (
     echo Binding a module's QMI function to WinUSB needs administrator rights.
     echo Windows asks for them now; accept the prompt to continue.
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Start-Process -Verb RunAs -FilePath '%~f0' -ErrorAction Stop } catch { Write-Host 'Elevation was declined; nothing was installed.' }"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Start-Process -Verb RunAs -FilePath '%~f0' %CELMUX_ELEVATE% -ErrorAction Stop } catch { Write-Host 'Elevation was declined; nothing was installed.' }"
     exit /b
 )
 
