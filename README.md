@@ -21,40 +21,29 @@ curl.exe -fsSL -o install.ps1 https://raw.githubusercontent.com/anti-rainer/celm
 powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 ```
 
-脚本把当前目录作为运行目录，创建 `bin`/`config`/`data`/`logs`/`driver`：Windows 服务端
-下载到 `bin\celmux.exe`，驱动资源放进 `driver\`，根目录生成 `start.bat`、`stop.bat`、
-`restart.bat` 与 `install-driver.bat`。首次启动会写出 `config\celmux.yaml`（含随机 web 密码），
-网页界面在 `https://127.0.0.1:7575`。
-
-模组的 QMI 功能若尚未绑定到 WinUSB，双击根目录的 `install-driver.bat`：它请求一次管理员
-授权，在提权窗口里自动识别模组的 QMI 功能、现场自签一张证书并完成绑定，不需要证书机构，
-也不需要 Windows SDK。撤销绑定请以管理员运行 `driver\uninstall-qmi-binding.ps1`。
-
-`install.ps1`、`install-driver.bat` 与 `driver\` 里的驱动资源来自 `anti-rainer/celmux` 的
-`packaging/desktop/windows/`；服务端二进制来自本仓库的 Release 资产。
-
-## 发布（GitHub Actions）
-
-二进制由本仓库的 Actions 直接从私有源码仓库构建：`Actions → release → Run workflow`，
-四个选项分别是源码分支（main / rc / beta）、构建版本号（留空 = 上一个 release + 0.0.1）、
-是否发布 release（默认不勾，产物留在本次运行里）、是否发送 Telegram 通知（默认勾选）。
-
-工作流用仓库密钥拉源码、发通知：
+脚本把当前目录作为运行目录：
 
 ```text
-celmux_pat      可读 anti-rainer/celmux
-TGBOT_TOKEN     Telegram bot token
-TGBOT_CHATID    Telegram 目标会话
+运行目录/
+├── bin/
+│   └── celmux.exe                  服务端
+├── config/
+│   └── celmux.yaml                 首次启动生成，含随机 web 密码
+├── data/
+├── driver/
+│   ├── celmux-qmi.inf
+│   ├── install-qmi-binding.ps1
+│   └── uninstall-qmi-binding.ps1
+├── logs/
+│   └── app.log
+├── install-driver.bat              绑定模组的 QMI 功能到 WinUSB
+├── start.bat
+├── stop.bat
+└── restart.bat
 ```
 
-每个 release 固定这五个资产，每个资产由工作流里一个独立的 job 构建：
-
-```text
-celmux_linux_amd64               服务端 · Linux amd64   · install.sh
-celmux_linux_arm64               服务端 · Linux arm64   · install.sh
-celmux_win_amd64.exe             服务端 · Windows amd64 · install.ps1
-celmux_linux_amd64_desktop.deb   桌面端 · Linux amd64（Debian 包）
-celmux_win_amd64_desktop.exe     桌面端 · Windows amd64（未完成，编得出才附带）
-```
-
-两个安装脚本都取 `releases/latest`，所以发布一次就换掉了新装用户拿到的版本。
+网页界面在 `https://127.0.0.1:7575`。模组的 QMI 功能若尚未绑定到 WinUSB，双击
+`install-driver.bat` 即可（现场自签证书，不需要证书机构或 Windows SDK），撤销绑定用
+`driver\uninstall-qmi-binding.ps1`。脚本与驱动资源来自
+[`anti-rainer/celmux`](https://github.com/anti-rainer/celmux)，服务端二进制取本仓库的最新
+Release。
