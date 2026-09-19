@@ -32,3 +32,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 
 `install.ps1`、`install-driver.bat` 与 `driver\` 里的驱动资源来自 `anti-rainer/celmux` 的
 `packaging/desktop/windows/`；服务端二进制来自本仓库的 Release 资产。
+
+## 发布（GitHub Actions）
+
+二进制由本仓库的 Actions 直接从私有源码仓库构建并发布，构建机不保留任何产物：
+
+- `Actions -> release -> Run workflow`：填分支 / tag / commit，构建并发布一个 release；
+- 或往本仓库推一个 tag，用同名 tag 构建发布。
+
+工作流用环境密钥 `celmux_pat`（需可读 `anti-rainer/celmux`）拉源码，产出
+`celmux_windows_amd64.exe`、`celmux_linux_amd64`、`celmux_linux_arm64` 与 `SHA256SUMS`，
+Windows 桌面端能编出来时一并附上。两个安装脚本都取 `releases/latest`，所以发布一次就换掉了
+新装用户拿到的版本。

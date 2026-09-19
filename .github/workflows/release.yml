@@ -1,0 +1,257 @@
+# Build the published binaries here, from the private source repository.
+#
+# This repository carries no source: it carries the installers and the
+# releases they download. The workflow checks `anti-rainer/celmux` out with a
+# personal access token that can read it and builds the same targets `make`
+# builds on a development machine.
+#
+#   Actions -> release -> Run workflow     build a branch, tag or commit
+#   push a tag                             publish that tag
+#
+# The tag is the release: both installers fetch `releases/latest`, so a run
+# that publishes is what a fresh install picks up.
+#
+# Assets, named after what the installers ask for:
+#
+#   celmux_windows_amd64.exe          install.ps1
+#   celmux-desktop_windows_amd64.exe  the Windows desktop client, once it builds
+#   celmux_linux_amd64                install.sh
+#   celmux_linux_arm64                install.sh
+#   SHA256SUMS                        checksum of every asset above
+#
+# `celmux_pat` is an environment secret, and a job only sees an environment
+# secret when it declares that environment, so the environment below has to
+# name it. The token needs read access to the private source only; the release
+# itself is written with the run's own token.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'anti-rainer/celmux branch, tag or commit to build'
+        required: false
+        default: beta
+      version:
+        description: 'Release tag; empty takes the tag, or the source revision'
+        required: false
+        default: ''
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: 0.16.0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-22.04
+    environment: celmux-release
+    outputs:
+      ref: ${{ steps.pick.outputs.ref }}
+      version: ${{ steps.pick.outputs.version }}
+      revision: ${{ steps.pick.outputs.revision }}
+    steps:
+      - name: Check the source out
+        uses: actions/checkout@v4
+        with:
+          repository: anti-rainer/celmux
+          ref: ${{ github.event.inputs.source_ref || github.ref_name }}
+          token: ${{ secrets.CELMUX_PAT }}
+          path: source
+          fetch-depth: 0
+      - name: Name the release
+        id: pick
+        shell: bash
+        working-directory: source
+        env:
+          REQUESTED_REF: ${{ github.event.inputs.source_ref || github.ref_name }}
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -eu
+          ref="$REQUESTED_REF"
+          version="$REQUESTED_VERSION"
+          describe=$(git describe --tags --always)
+          revision=$(git rev-parse --short HEAD)
+          if [ -z "$version" ] && [ "$REF_TYPE" = 'tag' ]; then
+            version="$GITHUB_REF_NAME"
+          fi
+          [ -n "$version" ] || version="$describe"
+          echo "source $ref at $revision ($describe) becomes release $version"
+          {
+            echo "ref=$ref"
+            echo "version=$version"
+            echo "revision=$revision"
+          } >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: windows service
+    needs: plan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    environment: celmux-release
+    steps:
+      - name: Check the source out
+        uses: actions/checkout@v4
+        with:
+          repository: anti-rainer/celmux
+          ref: ${{ needs.plan.outputs.ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          path: source
+          fetch-depth: 0
+      - name: Cache cargo and the native codecs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            source/.build-cache
+          key: windows-gnu-${{ hashFiles('source/Cargo.lock') }}
+      - name: Set the Node.js version up
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/web/package-lock.json
+      - name: Install the cross toolchain
+        # Inside the source tree, so the target lands on the toolchain the
+        # repository pins rather than on the runner's default one.
+        working-directory: source
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64
+          rustup target add x86_64-pc-windows-gnu
+      - name: Build the web assets
+        working-directory: source
+        run: make frontend-dist
+      - name: Build the service
+        working-directory: source
+        run: |
+          set -eu
+          mkdir -p dist
+          amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
+          evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
+          CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+          CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+          cargo build -p celmux-app --bin celmux --release --locked \
+            --target x86_64-pc-windows-gnu
+          install -m 0755 target/x86_64-pc-windows-gnu/release/celmux.exe \
+            dist/celmux_windows_amd64.exe
+      - name: Build the desktop client
+        continue-on-error: true
+        working-directory: source
+        run: |
+          set -eu
+          amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
+          evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
+          CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+          CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+          cargo build -p celmux-desktop --bin celmux-desktop --release --locked \
+            --target x86_64-pc-windows-gnu
+          install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-desktop.exe \
+            dist/celmux-desktop_windows_amd64.exe
+      - name: Keep the binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          if-no-files-found: error
+          path: |
+            source/dist/celmux_windows_amd64.exe
+            source/dist/celmux-desktop_windows_amd64.exe
+
+  linux:
+    name: linux service
+    needs: plan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    environment: celmux-release
+    steps:
+      - name: Check the source out
+        uses: actions/checkout@v4
+        with:
+          repository: anti-rainer/celmux
+          ref: ${{ needs.plan.outputs.ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          path: source
+          fetch-depth: 0
+      - name: Cache cargo and the native codecs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            source/.build-cache
+          key: linux-musl-${{ hashFiles('source/Cargo.lock') }}
+      - name: Set the Node.js version up
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/web/package-lock.json
+      - name: Install the musl toolchain
+        working-directory: source
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xz-utils
+          rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+          curl -fsSL -o /tmp/zig.tar.xz \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          sudo tar -xJf /tmp/zig.tar.xz -C /opt
+          sudo ln -sf "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
+          zig version
+      - name: Build both architectures
+        working-directory: source
+        run: make build-all
+      - name: Keep the binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          if-no-files-found: error
+          path: |
+            source/dist/celmux_linux_amd64
+            source/dist/celmux_linux_arm64
+
+  publish:
+    name: publish
+    needs: [plan, windows, linux]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Collect the binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Write the checksums
+        working-directory: assets
+        run: |
+          set -eu
+          find . -type f ! -name SHA256SUMS -printf '%P\n' | LC_ALL=C sort |
+            xargs sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.version }}
+          REF: ${{ needs.plan.outputs.ref }}
+          REVISION: ${{ needs.plan.outputs.revision }}
+        run: |
+          set -eu
+          notes=$(printf '%s\n' \
+            "由 anti-rainer/celmux 的 ${REF}（${REVISION}）构建。" \
+            '' \
+            'Linux 用 install.sh 安装，Windows 用 install.ps1 安装；' \
+            '每个资产的 SHA-256 见 SHA256SUMS。')
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" assets/* --title "$TAG" --notes "$notes"
+          fi
