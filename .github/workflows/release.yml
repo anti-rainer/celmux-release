@@ -18,10 +18,24 @@
 # that publishes takes the version as it stands and makes it `releases/latest`,
 # which is what both installers fetch.
 #
+# One job per platform and component: a failure names the artifact it belongs
+# to, and one broken component does not hide the state of the others.
+#
+#   windows-service  celmux_windows_amd64.exe               (mingw cross)
+#   windows-desktop  celmux-desktop_windows_amd64.exe       (unfinished)
+#   linux-service    celmux_linux_amd64 / _arm64            (musl, static)
+#   linux-desktop    celmux-desktop_linux_amd64 / _arm64    (glibc, native)
+#                    celmux-desktop_<version>_<arch>.deb
+#
+# The desktop links the host's glibc, so each of its architectures builds on a
+# runner of that architecture; the service is static, so both of its
+# architectures cross-build on x86. The Windows binary needs a mingw-w64 whose
+# GCC knows `-mdirect-extern-access` (GCC 12+), which is why that half of the
+# matrix is on 24.04 rather than 22.04.
+#
 # Assets, named after what the installers ask for:
 #
 #   celmux_windows_amd64.exe          install.ps1
-#   celmux-desktop_windows_amd64.exe  the Windows desktop client, once it builds
 #   celmux_linux_amd64                install.sh
 #   celmux_linux_arm64                install.sh
 #   SHA256SUMS                        checksum of every asset above
@@ -146,7 +160,6 @@ jobs:
         shell: bash
         working-directory: source
         env:
-          GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ${{ inputs.version }}
           PUBLISH: ${{ inputs.publish }}
         run: |
@@ -185,7 +198,7 @@ jobs:
             echo "revision=$revision"
           } >> "$GITHUB_OUTPUT"
 
-  windows:
+  windows-service:
     name: windows service
     needs: plan
     # 24.04 rather than 22.04: the 22.04 image ships mingw-w64 10, and the EVS
@@ -212,7 +225,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             source/.build-cache
-          key: windows-gnu-${{ hashFiles('source/Cargo.lock') }}
+          key: windows-service-${{ hashFiles('source/Cargo.lock') }}
       - name: Set the Node.js version up
         uses: actions/setup-node@v6
         with:
@@ -228,18 +241,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mingw-w64
           rustup target add x86_64-pc-windows-gnu
-      - name: Build the web assets
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          make frontend-dist 2>&1 | tee /tmp/windows-web.log
       - name: Build the service
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           {
+            make frontend-dist
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
             evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
@@ -250,32 +258,12 @@ jobs:
             install -m 0755 target/x86_64-pc-windows-gnu/release/celmux.exe \
               dist/celmux_windows_amd64.exe
           } 2>&1 | tee /tmp/windows-service.log
-      # The desktop client is still being built out, so a failure here leaves
-      # the service release alone instead of holding it back.
-      - name: Build the desktop client
-        continue-on-error: true
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
-            evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
-            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
-            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
-            cargo build -p celmux-desktop --bin celmux-desktop --release --locked \
-              --target x86_64-pc-windows-gnu
-            install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-desktop.exe \
-              dist/celmux-desktop_windows_amd64.exe
-          } 2>&1 | tee /tmp/windows-desktop.log
-      - name: Keep the binaries
+      - name: Keep the binary
         uses: actions/upload-artifact@v6
         with:
-          name: windows
+          name: windows-service
           if-no-files-found: error
-          path: |
-            source/dist/celmux_windows_amd64.exe
-            source/dist/celmux-desktop_windows_amd64.exe
+          path: source/dist/celmux_windows_amd64.exe
       - name: Report the failure
         if: failure()
         shell: bash
@@ -295,13 +283,108 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: windows-build-logs
+          name: windows-service-logs
           if-no-files-found: ignore
           path: /tmp/*.log
 
-  linux:
-    name: linux service
+  # The desktop client is still being built out on Windows: the job runs and its
+  # binary joins the release when it compiles, and nothing else waits for it.
+  windows-desktop:
+    name: windows desktop
     needs: plan
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 180
+    env:
+      CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
+    steps:
+      - name: Check the source out
+        uses: actions/checkout@v5
+        with:
+          repository: anti-rainer/celmux
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          persist-credentials: false
+          path: source
+          fetch-depth: 0
+      - name: Cache cargo and the native codecs
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            source/.build-cache
+          key: windows-desktop-${{ hashFiles('source/Cargo.lock') }}
+      - name: Set the Node.js version up
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/web/package-lock.json
+      - name: Install the cross toolchain
+        working-directory: source
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64
+          rustup target add x86_64-pc-windows-gnu
+      - name: Build the desktop client
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            make frontend-dist
+            mkdir -p dist
+            amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
+            evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
+            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+            cargo build -p celmux-desktop --bin celmux-desktop --release --locked \
+              --target x86_64-pc-windows-gnu
+            install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-desktop.exe \
+              dist/celmux-desktop_windows_amd64.exe
+          } 2>&1 | tee /tmp/windows-desktop.log
+      - name: Keep the binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-desktop
+          if-no-files-found: warn
+          path: source/dist/celmux-desktop_windows_amd64.exe
+      - name: Report the failure
+        if: failure()
+        shell: bash
+        run: |
+          set -u
+          for log in /tmp/*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log"
+            tail -45 "$log"
+            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
+              sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::warning::Windows 桌面端没有编出来（不影响本次发布）：${log##*/}:${escaped}"
+          done
+      - name: Keep the build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-desktop-logs
+          if-no-files-found: ignore
+          path: /tmp/*.log
+
+  # The service is a static musl binary, so both architectures build on x86:
+  # amd64 through the Makefile, arm64 through cargo zigbuild, which is what
+  # `.cargo/config.toml` expects to link that artifact and what supplies the
+  # `aarch64-linux-musl-gcc` ring's build script looks for.
+  linux-service:
+    name: linux service (${{ matrix.arch }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
@@ -327,7 +410,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             source/.build-cache
-          key: linux-musl-${{ hashFiles('source/Cargo.lock') }}
+          key: linux-service-${{ matrix.arch }}-${{ hashFiles('source/Cargo.lock') }}
       - name: Set the Node.js version up
         uses: actions/setup-node@v6
         with:
@@ -352,40 +435,33 @@ jobs:
           # `.cargo/config.toml` expects for that target.
           command -v cargo-zigbuild >/dev/null 2>&1 ||
             cargo install --locked cargo-zigbuild
-      - name: Build linux/amd64
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          make build-amd64 2>&1 | tee /tmp/linux-amd64.log
-      # `make build-arm64` expects a compiler for the target to be in the
-      # environment already; zigbuild is what supplies it (`aarch64-linux-musl-gcc`
-      # and the linker), so this is the Makefile's own recipe with cargo
-      # zigbuild in place of cargo build.
-      - name: Build linux/arm64
+      - name: Build the service
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           {
-            mkdir -p dist
-            amrwb=$(sh scripts/build-amrwb-native.sh aarch64-unknown-linux-musl)
-            evs=$(sh scripts/build-evs-native.sh aarch64-unknown-linux-musl)
-            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
-            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
-            cargo zigbuild -p celmux-app --bin celmux --release --locked \
-              --target aarch64-unknown-linux-musl
-            install -m 0750 target/aarch64-unknown-linux-musl/release/celmux \
-              dist/celmux_linux_arm64
-          } 2>&1 | tee /tmp/linux-arm64.log
-      - name: Keep the binaries
+            if [ '${{ matrix.arch }}' = 'amd64' ]; then
+              make build-amd64
+            else
+              make frontend-dist
+              mkdir -p dist
+              amrwb=$(sh scripts/build-amrwb-native.sh aarch64-unknown-linux-musl)
+              evs=$(sh scripts/build-evs-native.sh aarch64-unknown-linux-musl)
+              CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+              CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+              cargo zigbuild -p celmux-app --bin celmux --release --locked \
+                --target aarch64-unknown-linux-musl
+              install -m 0750 target/aarch64-unknown-linux-musl/release/celmux \
+                dist/celmux_linux_arm64
+            fi
+          } 2>&1 | tee /tmp/linux-service.log
+      - name: Keep the binary
         uses: actions/upload-artifact@v6
         with:
-          name: linux
+          name: linux-service-${{ matrix.arch }}
           if-no-files-found: error
-          path: |
-            source/dist/celmux_linux_amd64
-            source/dist/celmux_linux_arm64
+          path: source/dist/celmux_linux_${{ matrix.arch }}
       - name: Report the failure
         if: failure()
         shell: bash
@@ -403,15 +479,14 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: linux-build-logs
+          name: linux-service-${{ matrix.arch }}-logs
           if-no-files-found: ignore
           path: /tmp/*.log
 
-  # The desktop client links the host's glibc, so arm64 is built on an arm64
-  # runner rather than cross-compiled: the window opens X11, Wayland, GL and
-  # Vulkan with dlopen, but ALSA is a link-time library and a cross build would
-  # need that library for the target as well.
-  desktop:
+  # The desktop links the host's glibc and opens X11, Wayland, GL and Vulkan
+  # with dlopen, so each architecture is built on a runner of that
+  # architecture. ALSA is a link-time library, hence the one build dependency.
+  linux-desktop:
     name: linux desktop (${{ matrix.arch }})
     needs: plan
     strategy:
@@ -445,7 +520,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             source/.build-cache
-          key: desktop-${{ matrix.arch }}-${{ hashFiles('source/Cargo.lock') }}
+          key: linux-desktop-${{ matrix.arch }}-${{ hashFiles('source/Cargo.lock') }}
       - name: Set the Node.js version up
         uses: actions/setup-node@v6
         with:
@@ -457,12 +532,6 @@ jobs:
           set -eux
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
-      - name: Build the web assets
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          make frontend-dist 2>&1 | tee /tmp/desktop-web.log
       # `make build-desktop` names its output `_linux_amd64` whatever host it
       # ran on, so this is that recipe with the file named for this runner.
       - name: Build the desktop client
@@ -472,6 +541,7 @@ jobs:
           set -euo pipefail
           host=$(rustc -vV | sed -n 's/^host: //p')
           {
+            make frontend-dist
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh "$host")
             evs=$(sh scripts/build-evs-native.sh "$host")
@@ -480,18 +550,21 @@ jobs:
             cargo build -p celmux-desktop --bin celmux-desktop --release --locked
             install -m 0755 target/release/celmux-desktop \
               "dist/celmux-desktop_linux_${{ matrix.arch }}"
-          } 2>&1 | tee "/tmp/desktop-${{ matrix.arch }}.log"
+          } 2>&1 | tee /tmp/linux-desktop.log
       - name: Build the Debian package
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          sh packaging/desktop/linux/build-deb.sh \
-            "dist/celmux-desktop_linux_${{ matrix.arch }}" 2>&1 | tee /tmp/desktop-deb.log
+          {
+            sh packaging/desktop/linux/build-deb.sh \
+              "dist/celmux-desktop_linux_${{ matrix.arch }}"
+            ls -l dist/*.deb
+          } 2>&1 | tee /tmp/linux-desktop-deb.log
       - name: Keep the binaries
         uses: actions/upload-artifact@v6
         with:
-          name: desktop-${{ matrix.arch }}
+          name: linux-desktop-${{ matrix.arch }}
           if-no-files-found: error
           path: |
             source/dist/celmux-desktop_linux_${{ matrix.arch }}
@@ -513,14 +586,21 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: desktop-${{ matrix.arch }}-logs
+          name: linux-desktop-${{ matrix.arch }}-logs
           if-no-files-found: ignore
           path: /tmp/*.log
 
   publish:
     name: publish
-    needs: [plan, windows, linux, desktop]
-    if: ${{ inputs.publish == true }}
+    needs: [plan, windows-service, windows-desktop, linux-service, linux-desktop]
+    # `always()` so the tolerated Windows desktop cannot skip the release; the
+    # required jobs are then checked explicitly.
+    if: >-
+      ${{ always() && inputs.publish == true &&
+          needs.plan.result == 'success' &&
+          needs['windows-service'].result == 'success' &&
+          needs['linux-service'].result == 'success' &&
+          needs['linux-desktop'].result == 'success' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Collect the binaries
@@ -547,6 +627,7 @@ jobs:
             "由 anti-rainer/celmux 的 ${REF}（${REVISION}）构建。" \
             '' \
             'Linux 用 install.sh 安装，Windows 用 install.ps1 安装；' \
+            '桌面端见 celmux-desktop_* 资产（Debian 包为 celmux-desktop_<版本>_<arch>.deb）；' \
             '每个资产的 SHA-256 见 SHA256SUMS。')
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" assets/* --clobber
@@ -558,7 +639,7 @@ jobs:
   # a run that fails is exactly the one worth a message.
   notify:
     name: telegram
-    needs: [plan, windows, linux, desktop, publish]
+    needs: [plan, windows-service, windows-desktop, linux-service, linux-desktop, publish]
     if: ${{ always() && inputs.notify == true }}
     runs-on: ubuntu-22.04
     steps:
@@ -572,9 +653,10 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           PUBLISH: ${{ inputs.publish }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
-          WINDOWS: ${{ needs.windows.result }}
-          LINUX: ${{ needs.linux.result }}
-          DESKTOP: ${{ needs.desktop.result }}
+          WINDOWS_SERVICE: ${{ needs['windows-service'].result }}
+          WINDOWS_DESKTOP: ${{ needs['windows-desktop'].result }}
+          LINUX_SERVICE: ${{ needs['linux-service'].result }}
+          LINUX_DESKTOP: ${{ needs['linux-desktop'].result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.version }}
         run: |
@@ -595,10 +677,15 @@ jobs:
             esac
           }
 
+          # The Windows desktop is allowed to fail while it is being built out,
+          # so it is reported but does not make the run a failure.
           failed=0
-          [ "${WINDOWS:-}" = 'success' ] || failed=1
-          [ "${LINUX:-}" = 'success' ] || failed=1
-          [ "${DESKTOP:-}" = 'success' ] || failed=1
+          [ "${WINDOWS_SERVICE:-}" = 'success' ] || failed=1
+          [ "${LINUX_SERVICE:-}" = 'success' ] || failed=1
+          [ "${LINUX_DESKTOP:-}" = 'success' ] || failed=1
+          desktop_note=''
+          [ "${WINDOWS_DESKTOP:-}" = 'success' ] ||
+            desktop_note="（未完成，不影响发布）"
           release='未发布（产物在本次运行里）'
           if [ "${PUBLISH:-}" = 'true' ]; then
             case "${PUBLISH_RESULT:-}" in
@@ -617,9 +704,10 @@ jobs:
             "版本：${version}" \
             "源码：${REF:-未知} @ ${REVISION:-未知}" \
             "构建准备：$(state "${PLAN_RESULT:-}")" \
-            "Windows：$(state "${WINDOWS:-}")" \
-            "Linux：$(state "${LINUX:-}")" \
-            "Linux 桌面端：$(state "${DESKTOP:-}")" \
+            "服务端 Windows：$(state "${WINDOWS_SERVICE:-}")" \
+            "服务端 Linux：$(state "${LINUX_SERVICE:-}")" \
+            "桌面端 Windows：$(state "${WINDOWS_DESKTOP:-}")${desktop_note}" \
+            "桌面端 Linux：$(state "${LINUX_DESKTOP:-}")" \
             "Release：${release}" \
             "运行：${RUN_URL}")
 
