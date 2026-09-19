@@ -47,6 +47,16 @@ TGBOT_TOKEN     Telegram bot token
 TGBOT_CHATID    Telegram 目标会话
 ```
 
-产出 `celmux_windows_amd64.exe`、`celmux_linux_amd64`、`celmux_linux_arm64` 与 `SHA256SUMS`，
-Windows 桌面端能编出来时一并附上。两个安装脚本都取 `releases/latest`，所以发布一次就换掉了
-新装用户拿到的版本。
+平台矩阵：服务端 Windows amd64 + Linux amd64/arm64，桌面端 Linux amd64/arm64（Windows
+桌面端还在开发，编得出来时才附带）。产出：
+
+```text
+celmux_windows_amd64.exe              服务端 · install.ps1
+celmux_linux_amd64 / _arm64           服务端 · install.sh
+celmux-desktop_linux_amd64 / _arm64   桌面端裸二进制
+celmux-desktop_<版本>_amd64 / _arm64.deb   桌面端 Debian 包
+celmux-desktop_windows_amd64.exe      桌面端（Windows，未完成）
+SHA256SUMS                            上面每个资产的校验和
+```
+
+两个安装脚本都取 `releases/latest`，所以发布一次就换掉了新装用户拿到的版本。
