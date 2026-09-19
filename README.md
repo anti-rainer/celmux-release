@@ -35,12 +35,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 
 ## 发布（GitHub Actions）
 
-二进制由本仓库的 Actions 直接从私有源码仓库构建并发布，构建机不保留任何产物：
+二进制由本仓库的 Actions 直接从私有源码仓库构建：`Actions → release → Run workflow`，
+四个选项分别是源码分支（main / rc / beta）、构建版本号（留空 = 上一个 release + 0.0.1）、
+是否发布 release（默认不勾，产物留在本次运行里）、是否发送 Telegram 通知（默认勾选）。
 
-- `Actions -> release -> Run workflow`：填分支 / tag / commit，构建并发布一个 release；
-- 或往本仓库推一个 tag，用同名 tag 构建发布。
+工作流用仓库密钥拉源码、发通知：
 
-工作流用环境密钥 `celmux_pat`（需可读 `anti-rainer/celmux`）拉源码，产出
-`celmux_windows_amd64.exe`、`celmux_linux_amd64`、`celmux_linux_arm64` 与 `SHA256SUMS`，
+```text
+celmux_pat      可读 anti-rainer/celmux
+TGBOT_TOKEN     Telegram bot token
+TGBOT_CHATID    Telegram 目标会话
+```
+
+产出 `celmux_windows_amd64.exe`、`celmux_linux_amd64`、`celmux_linux_arm64` 与 `SHA256SUMS`，
 Windows 桌面端能编出来时一并附上。两个安装脚本都取 `releases/latest`，所以发布一次就换掉了
 新装用户拿到的版本。

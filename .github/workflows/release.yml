@@ -1,15 +1,22 @@
-# Build the published binaries here, from the private source repository.
+# Build the released binaries here, from the private source repository.
 #
 # This repository carries no source: it carries the installers and the
-# releases they download. The workflow checks `anti-rainer/celmux` out with a
-# personal access token that can read it and builds the same targets `make`
-# builds on a development machine.
+# releases they download. A run checks `anti-rainer/celmux` out with a personal
+# access token that can read it and builds the same targets `make` builds on a
+# development machine.
 #
-#   Actions -> release -> Run workflow     build a branch, tag or commit
-#   push a tag                             publish that tag
+#   Actions -> release -> Run workflow
 #
-# The tag is the release: both installers fetch `releases/latest`, so a run
-# that publishes is what a fresh install picks up.
+#   source_ref  which source branch to build: main (default), rc, beta
+#   version     build version; empty continues the last release (+0.0.1)
+#   publish     create the release; unchecked keeps the binaries in the run
+#   notify      report the result to Telegram
+#
+# A run that does not publish still builds everything: the version gains a
+# `-dev.<date>-<revision>` marker instead, so a test build cannot be mistaken
+# for a release, and the binaries stay downloadable from the run itself. A run
+# that publishes takes the version as it stands and makes it `releases/latest`,
+# which is what both installers fetch.
 #
 # Assets, named after what the installers ask for:
 #
@@ -19,10 +26,10 @@
 #   celmux_linux_arm64                install.sh
 #   SHA256SUMS                        checksum of every asset above
 #
-# `celmux_pat` is an environment secret, and a job only sees an environment
-# secret when it declares that environment, so the environment below has to
-# name it. The token needs read access to the private source only; the release
-# itself is written with the run's own token.
+# Secrets: `celmux_pat` reads the private source; `TGBOT_TOKEN` and
+# `TGBOT_CHATID` are the notifier's bot. All three are repository secrets
+# (Settings -> Secrets and variables -> Actions), so every job can read them
+# and no job has to declare an environment.
 
 name: release
 
@@ -30,21 +37,30 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: 'anti-rainer/celmux branch, tag or commit to build'
-        required: false
-        default: beta
+        description: '源码分支'
+        type: choice
+        options:
+          - main
+          - rc
+          - beta
+        default: main
       version:
-        description: 'Release tag; empty takes the tag, or the source revision'
-        required: false
+        description: '构建版本号（留空 = 上一个 release + 0.0.1）'
+        type: string
         default: ''
-  push:
-    tags:
-      - '*'
+      publish:
+        description: '发布 release'
+        type: boolean
+        default: false
+      notify:
+        description: '发送 Telegram 通知'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
-# One release at a time: two runs would publish into the same tag.
+# One release at a time: two runs would write into the same tag.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -57,9 +73,7 @@ jobs:
   plan:
     name: plan
     runs-on: ubuntu-22.04
-    environment: celmux-release
     outputs:
-      ref: ${{ steps.pick.outputs.ref }}
       version: ${{ steps.pick.outputs.version }}
       revision: ${{ steps.pick.outputs.revision }}
     steps:
@@ -67,34 +81,53 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: anti-rainer/celmux
-          ref: ${{ github.event.inputs.source_ref || github.ref_name }}
+          ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
           # The clone happens with the token; nothing later needs it, so it is
           # not left in the checkout for the build to read.
           persist-credentials: false
           path: source
           fetch-depth: 0
-      - name: Name the release
+      - name: Name the build
         id: pick
         shell: bash
         working-directory: source
         env:
-          REQUESTED_REF: ${{ github.event.inputs.source_ref || github.ref_name }}
-          REQUESTED_VERSION: ${{ github.event.inputs.version }}
-          REF_TYPE: ${{ github.ref_type }}
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           set -eu
-          ref="$REQUESTED_REF"
-          version="$REQUESTED_VERSION"
-          describe=$(git describe --tags --always)
           revision=$(git rev-parse --short HEAD)
-          if [ -z "$version" ] && [ "$REF_TYPE" = 'tag' ]; then
-            version="$GITHUB_REF_NAME"
+          describe=$(git describe --tags --always)
+
+          # 0.0.1 for a version that carries no `X.Y.Z`, and the next patch for
+          # every other shape the tags have taken (`1.0.3`, `1.0.3-fix2`,
+          # `1.0.3-fix2-31-g4ebac6c`).
+          next_version() {
+            set -- $(printf '%s' "${1:-}" |
+              sed -n 's/^[vV]*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')
+            if [ "$#" -ne 3 ]; then
+              printf '0.0.1\n'
+              return 0
+            fi
+            printf '%s.%s.%s\n' "$1" "$2" "$(( $3 + 1 ))"
+          }
+
+          version="$REQUESTED_VERSION"
+          if [ -z "$version" ]; then
+            previous=$(gh release view --repo "$GITHUB_REPOSITORY" \
+              --json tagName --jq '.tagName' 2>/dev/null || true)
+            [ -n "$previous" ] || previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
+            echo "上一个版本：${previous:-无}"
+            version=$(next_version "$previous")
           fi
-          [ -n "$version" ] || version="$describe"
-          echo "source $ref at $revision ($describe) becomes release $version"
+          if [ "$PUBLISH" != 'true' ]; then
+            version="$version-dev.$(date -u +%Y%m%d)-$revision"
+          fi
+
+          echo "构建版本 $version（$describe @ $revision）"
           {
-            echo "ref=$ref"
             echo "version=$version"
             echo "revision=$revision"
           } >> "$GITHUB_OUTPUT"
@@ -104,13 +137,14 @@ jobs:
     needs: plan
     runs-on: ubuntu-22.04
     timeout-minutes: 180
-    environment: celmux-release
+    env:
+      CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check the source out
         uses: actions/checkout@v4
         with:
           repository: anti-rainer/celmux
-          ref: ${{ needs.plan.outputs.ref }}
+          ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
           persist-credentials: false
           path: source
@@ -154,6 +188,8 @@ jobs:
             --target x86_64-pc-windows-gnu
           install -m 0755 target/x86_64-pc-windows-gnu/release/celmux.exe \
             dist/celmux_windows_amd64.exe
+      # The desktop client is still being built out, so a failure here leaves
+      # the service release alone instead of holding it back.
       - name: Build the desktop client
         continue-on-error: true
         working-directory: source
@@ -181,13 +217,14 @@ jobs:
     needs: plan
     runs-on: ubuntu-22.04
     timeout-minutes: 180
-    environment: celmux-release
+    env:
+      CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check the source out
         uses: actions/checkout@v4
         with:
           repository: anti-rainer/celmux
-          ref: ${{ needs.plan.outputs.ref }}
+          ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
           persist-credentials: false
           path: source
@@ -213,6 +250,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xz-utils
           rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+          # The codec scripts build through zig for musl, exactly as a
+          # development machine does.
           curl -fsSL -o /tmp/zig.tar.xz \
             "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           sudo tar -xJf /tmp/zig.tar.xz -C /opt
@@ -233,6 +272,7 @@ jobs:
   publish:
     name: publish
     needs: [plan, windows, linux]
+    if: ${{ inputs.publish == true }}
     runs-on: ubuntu-22.04
     steps:
       - name: Collect the binaries
@@ -251,7 +291,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.plan.outputs.version }}
-          REF: ${{ needs.plan.outputs.ref }}
+          REF: ${{ inputs.source_ref }}
           REVISION: ${{ needs.plan.outputs.revision }}
         run: |
           set -eu
@@ -265,3 +305,71 @@ jobs:
           else
             gh release create "$TAG" assets/* --title "$TAG" --notes "$notes"
           fi
+
+  # The report is the last thing that happens and runs whatever the build did:
+  # a run that fails is exactly the one worth a message.
+  notify:
+    name: telegram
+    needs: [plan, windows, linux, publish]
+    if: ${{ always() && inputs.notify == true }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Report the run
+        env:
+          TGBOT_TOKEN: ${{ secrets.TGBOT_TOKEN }}
+          TGBOT_CHATID: ${{ secrets.TGBOT_CHATID }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          REF: ${{ inputs.source_ref }}
+          REVISION: ${{ needs.plan.outputs.revision }}
+          PUBLISH: ${{ inputs.publish }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          WINDOWS: ${{ needs.windows.result }}
+          LINUX: ${{ needs.linux.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.version }}
+        run: |
+          set -eu
+          if [ -z "${TGBOT_TOKEN:-}" ] || [ -z "${TGBOT_CHATID:-}" ]; then
+            echo 'TGBOT_TOKEN 或 TGBOT_CHATID 未配置，跳过通知。'
+            exit 0
+          fi
+
+          state() {
+            case "${1:-}" in
+              success) printf '成功' ;;
+              failure) printf '失败' ;;
+              cancelled) printf '已取消' ;;
+              skipped) printf '跳过' ;;
+              '') printf '未运行' ;;
+              *) printf '%s' "$1" ;;
+            esac
+          }
+
+          failed=0
+          [ "${WINDOWS:-}" = 'success' ] || failed=1
+          [ "${LINUX:-}" = 'success' ] || failed=1
+          release='未发布（产物在本次运行里）'
+          if [ "${PUBLISH:-}" = 'true' ]; then
+            case "${PUBLISH_RESULT:-}" in
+              success) release="已发布 ${RELEASE_URL}" ;;
+              skipped) release='未发布（构建未通过）' ;;
+              *) release="发布失败（$(state "$PUBLISH_RESULT")）"; failed=1 ;;
+            esac
+          fi
+
+          headline='celmux 构建成功'
+          [ "$failed" -eq 0 ] || headline='celmux 构建失败'
+          message=$(printf '%s\n' \
+            "$headline" \
+            "版本：${VERSION:-未知}" \
+            "源码：${REF:-未知} @ ${REVISION:-未知}" \
+            "Windows：$(state "${WINDOWS:-}")" \
+            "Linux：$(state "${LINUX:-}")" \
+            "Release：${release}" \
+            "运行：${RUN_URL}")
+
+          curl -fsS -X POST "https://api.telegram.org/bot${TGBOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TGBOT_CHATID}" \
+            --data-urlencode "text=${message}" \
+            --data-urlencode 'disable_web_page_preview=true' >/dev/null
+          echo '已发送 Telegram 通知'
