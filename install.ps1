@@ -12,7 +12,7 @@
 #                 asset of the newest release.
 #   -From <path>  Install an executable that is already on this machine.
 #   -RepoBase <uri>
-#                 Where the root scripts and the driver installer are fetched
+#                 Where the root scripts and the driver package are fetched
 #                 from. Defaults to the public release repository.
 #   -Force        Replace an existing bin\celmux.exe.
 #
@@ -76,14 +76,23 @@ function Write-Ascii($path, $lines) {
     [System.IO.File]::WriteAllText($path, $text, [System.Text.Encoding]::ASCII)
 }
 
+function Set-Crlf($path) {
+    # A file that came from a repository is stored with the line endings that
+    # repository keeps, which for our sources is LF. cmd.exe reads a control
+    # script line by line and wants CRLF, so the fetched one is rewritten.
+    $text = [System.IO.File]::ReadAllText($path)
+    $text = ($text -replace "`r`n", "`n") -replace "`n", "`r`n"
+    [System.IO.File]::WriteAllText($path, $text, [System.Text.Encoding]::ASCII)
+}
+
 $root = (Get-Location).Path
 $binary = Join-Path $root 'bin\celmux.exe'
 
 Write-Step "Install folder: $root"
-foreach ($folder in 'bin', 'config', 'data', 'logs') {
+foreach ($folder in 'bin', 'config', 'data', 'logs', 'driver') {
     New-Directory (Join-Path $root $folder)
 }
-Write-Step 'Created bin, config, data and logs'
+Write-Step 'Created bin, config, data, logs and driver'
 
 if ((Test-Path -LiteralPath $binary) -and -not $Force) {
     Write-Step "Keeping the installed $binary (pass -Force to replace it)"
@@ -166,27 +175,36 @@ Write-Ascii (Join-Path $root 'restart.bat') $restartLines
 
 Write-Step 'Wrote start.bat, stop.bat and restart.bat'
 
-# Binding a module's QMI function to WinUSB is its own program, because it
-# needs one elevation prompt and a terms page: it sits in the root next to
-# these scripts and the service offers to open it (`celmux
-# --install-qmi-binding`).
-$installer = Join-Path $root 'celmux-driver-installer.exe'
-$installerReady = $false
-if ((Test-Path -LiteralPath $installer) -and -not $Force) {
-    $installerReady = $true
-} else {
+# The QMI binding lives with the service, because binding a module's QMI
+# function to WinUSB needs one elevated run and the operator should not have to
+# find the script in a repository. The package is the INF template plus the two
+# scripts that install and remove the binding; `install-driver.bat` in the root
+# starts an elevated run of the installer. The service offers the same step as
+# `celmux --install-qmi-binding`, which looks for the script here.
+$driverDir = Join-Path $root 'driver'
+foreach ($file in 'install-qmi-binding.ps1', 'uninstall-qmi-binding.ps1', 'celmux-qmi.inf') {
+    $target = Join-Path $driverDir $file
+    if ((Test-Path -LiteralPath $target) -and -not $Force) {
+        continue
+    }
     try {
-        Get-RemoteFile "$RepoBase/celmux-driver-installer.exe" $installer
-        $installerReady = $true
+        Get-RemoteFile "$RepoBase/$file" $target
     } catch {
-        Write-Warning "could not fetch the driver installer from ${RepoBase} - $($_.Exception.Message)"
+        Write-Warning "could not fetch $file from ${RepoBase} - $($_.Exception.Message)"
+        continue
     }
 }
-if ($installerReady) {
-    Write-Step "Driver installer: $installer"
-} else {
-    Write-Step "Driver installer was not downloaded; fetch celmux-driver-installer.exe from $RepoBase into $root"
+
+$driverBat = Join-Path $root 'install-driver.bat'
+if ((-not (Test-Path -LiteralPath $driverBat)) -or $Force) {
+    try {
+        Get-RemoteFile "$RepoBase/install-driver.bat" $driverBat
+        Set-Crlf $driverBat
+    } catch {
+        Write-Warning "could not fetch install-driver.bat from ${RepoBase} - $($_.Exception.Message)"
+    }
 }
+Write-Step "Driver package in $driverDir (bind a module with install-driver.bat)"
 
 Write-Host ''
 Write-Host 'Next:'
@@ -195,7 +213,7 @@ Write-Host '  stop.bat       stop the service started from this folder'
 Write-Host '  restart.bat    stop, wait, start again'
 Write-Host ''
 Write-Host 'A module whose QMI function is not bound to WinUSB yet needs one'
-Write-Host 'elevated run:  double-click celmux-driver-installer.exe (accept the terms)'
+Write-Host 'elevated run:  double-click install-driver.bat, which asks for it'
 Write-Host 'The service reports the same step as:  celmux --install-qmi-binding'
 Write-Host ''
 Write-Host 'The first start creates config\celmux.yaml with a generated web password.'

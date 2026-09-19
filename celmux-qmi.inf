@@ -1,0 +1,64 @@
+; Copyright (c) 2026 anti-rainer
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+;
+; Binds a Qualcomm module's RMNET/QMI data function to WinUSB.
+;
+; Linux reaches this function through the qmi_wwan driver, which publishes both
+; a wwan netdev and a /dev/cdc-wdm* control node. Windows has no such driver
+; and no cdc-wdm node: the interface is owned by the USB generic parent driver
+; and, with nothing bound to it, libusb cannot even open the device. Binding
+; WinUSB makes the interface claimable by the service, which then speaks QMI to
+; it directly.
+;
+; This package contains no driver binary of its own: it references the WinUSB
+; driver Microsoft ships with Windows, so the module keeps working with its
+; vendor's own tooling on every interface that is not listed here.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49f0-BC3D-A4FF138216D6}
+Provider    = %ProviderName%
+CatalogFile = celmux-qmi.cat
+DriverVer   = 09/18/2026,1.0.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%ProviderName% = CelmuxDevices, NTamd64, NTarm64
+
+; Interface 4 of the Quectel composite device: the vendor-specific function
+; `AT+QCFG="usbcfg"` reports as RMNET. The revision-less hardware id keeps the
+; binding in place across the module's firmware revisions.
+;
+; One entry per product id of this module family. The two below are the ones
+; verified with the service; another module whose function sits on interface 4
+; is one more line, and a module that puts it elsewhere needs that interface
+; number instead. Only this interface is claimed - the AT, NMEA, diagnostic,
+; modem and audio functions of the same device keep their vendor drivers.
+[CelmuxDevices.NTamd64]
+%DeviceName% = CelmuxQmi_Install, USB\VID_2C7C&PID_0125&MI_04
+%DeviceName% = CelmuxQmi_Install, USB\VID_2C7C&PID_0306&MI_04
+
+[CelmuxDevices.NTarm64]
+%DeviceName% = CelmuxQmi_Install, USB\VID_2C7C&PID_0125&MI_04
+%DeviceName% = CelmuxQmi_Install, USB\VID_2C7C&PID_0306&MI_04
+
+[CelmuxQmi_Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[CelmuxQmi_Install.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[CelmuxQmi_Install.HW]
+AddReg = CelmuxQmi_Hw
+
+; The device interface GUID an application passes to SetupAPI/libusb to find
+; this function again after a replug.
+[CelmuxQmi_Hw]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{6d8a1f2c-2f4d-4a5c-9d1e-7b3c0e5a9f21}"
+
+[Strings]
+ProviderName = "Celmux"
+DeviceName   = "Celmux QMI Interface"
