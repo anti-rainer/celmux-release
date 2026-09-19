@@ -21,7 +21,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Url = 'https://github.com/anti-rainer/celmux-release/releases/latest/download/celmux_windows_amd64.exe',
+    [string]$Url = 'https://github.com/anti-rainer/celmux-release/releases/latest/download/celmux_win_amd64.exe',
     [string]$From,
     [string]$RepoBase = 'https://raw.githubusercontent.com/anti-rainer/celmux-release/main',
     [switch]$Force
