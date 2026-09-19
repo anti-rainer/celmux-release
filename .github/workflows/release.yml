@@ -407,9 +407,119 @@ jobs:
           if-no-files-found: ignore
           path: /tmp/*.log
 
+  # The desktop client links the host's glibc, so arm64 is built on an arm64
+  # runner rather than cross-compiled: the window opens X11, Wayland, GL and
+  # Vulkan with dlopen, but ALSA is a link-time library and a cross build would
+  # need that library for the target as well.
+  desktop:
+    name: linux desktop (${{ matrix.arch }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      BUILD_TAG: ${{ needs.plan.outputs.version }}
+      CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
+      DEB_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Check the source out
+        uses: actions/checkout@v5
+        with:
+          repository: anti-rainer/celmux
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          persist-credentials: false
+          path: source
+          fetch-depth: 0
+      - name: Cache cargo and the native codecs
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            source/.build-cache
+          key: desktop-${{ matrix.arch }}-${{ hashFiles('source/Cargo.lock') }}
+      - name: Set the Node.js version up
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: source/web/package-lock.json
+      - name: Install the build libraries
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - name: Build the web assets
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          make frontend-dist 2>&1 | tee /tmp/desktop-web.log
+      # `make build-desktop` names its output `_linux_amd64` whatever host it
+      # ran on, so this is that recipe with the file named for this runner.
+      - name: Build the desktop client
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          {
+            mkdir -p dist
+            amrwb=$(sh scripts/build-amrwb-native.sh "$host")
+            evs=$(sh scripts/build-evs-native.sh "$host")
+            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+            cargo build -p celmux-desktop --bin celmux-desktop --release --locked
+            install -m 0755 target/release/celmux-desktop \
+              "dist/celmux-desktop_linux_${{ matrix.arch }}"
+          } 2>&1 | tee "/tmp/desktop-${{ matrix.arch }}.log"
+      - name: Build the Debian package
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh packaging/desktop/linux/build-deb.sh \
+            "dist/celmux-desktop_linux_${{ matrix.arch }}" 2>&1 | tee /tmp/desktop-deb.log
+      - name: Keep the binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            source/dist/celmux-desktop_linux_${{ matrix.arch }}
+            source/dist/celmux-desktop_*.deb
+      - name: Report the failure
+        if: failure()
+        shell: bash
+        run: |
+          set -u
+          for log in /tmp/*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log"
+            tail -45 "$log"
+            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
+              sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error::${log##*/}:${escaped}"
+          done
+      - name: Keep the build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-${{ matrix.arch }}-logs
+          if-no-files-found: ignore
+          path: /tmp/*.log
+
   publish:
     name: publish
-    needs: [plan, windows, linux]
+    needs: [plan, windows, linux, desktop]
     if: ${{ inputs.publish == true }}
     runs-on: ubuntu-22.04
     steps:
@@ -448,7 +558,7 @@ jobs:
   # a run that fails is exactly the one worth a message.
   notify:
     name: telegram
-    needs: [plan, windows, linux, publish]
+    needs: [plan, windows, linux, desktop, publish]
     if: ${{ always() && inputs.notify == true }}
     runs-on: ubuntu-22.04
     steps:
@@ -464,6 +574,7 @@ jobs:
           PUBLISH_RESULT: ${{ needs.publish.result }}
           WINDOWS: ${{ needs.windows.result }}
           LINUX: ${{ needs.linux.result }}
+          DESKTOP: ${{ needs.desktop.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.version }}
         run: |
@@ -487,6 +598,7 @@ jobs:
           failed=0
           [ "${WINDOWS:-}" = 'success' ] || failed=1
           [ "${LINUX:-}" = 'success' ] || failed=1
+          [ "${DESKTOP:-}" = 'success' ] || failed=1
           release='未发布（产物在本次运行里）'
           if [ "${PUBLISH:-}" = 'true' ]; then
             case "${PUBLISH_RESULT:-}" in
@@ -507,6 +619,7 @@ jobs:
             "构建准备：$(state "${PLAN_RESULT:-}")" \
             "Windows：$(state "${WINDOWS:-}")" \
             "Linux：$(state "${LINUX:-}")" \
+            "Linux 桌面端：$(state "${DESKTOP:-}")" \
             "Release：${release}" \
             "运行：${RUN_URL}")
 
