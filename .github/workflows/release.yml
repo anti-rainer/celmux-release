@@ -44,6 +44,11 @@ on:
 permissions:
   contents: write
 
+# One release at a time: two runs would publish into the same tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   ZIG_VERSION: 0.16.0
   CARGO_TERM_COLOR: always
@@ -64,6 +69,9 @@ jobs:
           repository: anti-rainer/celmux
           ref: ${{ github.event.inputs.source_ref || github.ref_name }}
           token: ${{ secrets.CELMUX_PAT }}
+          # The clone happens with the token; nothing later needs it, so it is
+          # not left in the checkout for the build to read.
+          persist-credentials: false
           path: source
           fetch-depth: 0
       - name: Name the release
@@ -104,6 +112,7 @@ jobs:
           repository: anti-rainer/celmux
           ref: ${{ needs.plan.outputs.ref }}
           token: ${{ secrets.CELMUX_PAT }}
+          persist-credentials: false
           path: source
           fetch-depth: 0
       - name: Cache cargo and the native codecs
@@ -180,6 +189,7 @@ jobs:
           repository: anti-rainer/celmux
           ref: ${{ needs.plan.outputs.ref }}
           token: ${{ secrets.CELMUX_PAT }}
+          persist-credentials: false
           path: source
           fetch-depth: 0
       - name: Cache cargo and the native codecs
