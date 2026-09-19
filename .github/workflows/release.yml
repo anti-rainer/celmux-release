@@ -77,8 +77,61 @@ jobs:
       version: ${{ steps.pick.outputs.version }}
       revision: ${{ steps.pick.outputs.revision }}
     steps:
+      # Checked before anything else, because `actions/checkout` reports a
+      # token that cannot read the private source as a plain clone failure.
+      - name: Check what the token can read
+        env:
+          PAT: ${{ secrets.CELMUX_PAT }}
+        run: |
+          set -eu
+          if [ -z "${PAT:-}" ]; then
+            echo '::error::仓库密钥 celmux_pat 没有配置（Settings -> Secrets and variables -> Actions -> New repository secret）'
+            exit 1
+          fi
+          # 令牌本身从不打印，但形状（类型、长度、有没有带空白）足以看出粘贴错误。
+          trimmed=$(printf '%s' "$PAT" | tr -d '[:space:]')
+          case "$PAT" in
+            github_pat_*) kind='fine-grained' ;;
+            ghp_*) kind='classic' ;;
+            *) kind='未知（不以 github_pat_ / ghp_ 开头）' ;;
+          esac
+          if [ "$PAT" = "$trimmed" ]; then
+            blanks='没有'
+          else
+            blanks='有（密钥里带了空格或换行，需要重新粘贴）'
+          fi
+          echo "celmux_pat：类型 ${kind}，长度 ${#PAT}，首尾空白 ${blanks}"
+          who=$(curl -s -H "Authorization: Bearer ${PAT}" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/user |
+            python3 -c 'import json,sys;print(json.load(sys.stdin).get("login","未知"))')
+          scopes=$(curl -s -D - -o /dev/null -H "Authorization: Bearer ${PAT}" \
+            https://api.github.com/user | tr -d '\r' |
+            sed -n 's/^x-oauth-scopes: //p')
+          echo "celmux_pat 属于账号 ${who}；scopes: ${scopes:-（无，fine-grained 令牌没有这个头）}"
+          code=$(curl -s -o /tmp/source.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${PAT}" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/anti-rainer/celmux)
+          case "$code" in
+            200)
+              echo 'celmux_pat 可以读取 anti-rainer/celmux，继续。'
+              ;;
+            404)
+              echo '::error::celmux_pat 读 anti-rainer/celmux 得到 404：令牌没有包含这个私有仓库。fine-grained 令牌要在 Repository access 里选中 anti-rainer/celmux 并给 Contents: Read；classic 令牌要有 repo 范围。'
+              exit 1
+              ;;
+            401)
+              echo '::error::celmux_pat 无效或已过期（HTTP 401）。'
+              exit 1
+              ;;
+            *)
+              echo "::error::celmux_pat 读 anti-rainer/celmux 失败（HTTP ${code}）：$(cat /tmp/source.json)"
+              exit 1
+              ;;
+          esac
       - name: Check the source out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: anti-rainer/celmux
           ref: ${{ inputs.source_ref }}
@@ -141,7 +194,7 @@ jobs:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check the source out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: anti-rainer/celmux
           ref: ${{ inputs.source_ref }}
@@ -150,7 +203,7 @@ jobs:
           path: source
           fetch-depth: 0
       - name: Cache cargo and the native codecs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -158,7 +211,7 @@ jobs:
             source/.build-cache
           key: windows-gnu-${{ hashFiles('source/Cargo.lock') }}
       - name: Set the Node.js version up
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: npm
@@ -204,7 +257,7 @@ jobs:
           install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-desktop.exe \
             dist/celmux-desktop_windows_amd64.exe
       - name: Keep the binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows
           if-no-files-found: error
@@ -221,7 +274,7 @@ jobs:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check the source out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: anti-rainer/celmux
           ref: ${{ inputs.source_ref }}
@@ -230,7 +283,7 @@ jobs:
           path: source
           fetch-depth: 0
       - name: Cache cargo and the native codecs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -238,7 +291,7 @@ jobs:
             source/.build-cache
           key: linux-musl-${{ hashFiles('source/Cargo.lock') }}
       - name: Set the Node.js version up
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: npm
@@ -261,7 +314,7 @@ jobs:
         working-directory: source
         run: make build-all
       - name: Keep the binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: linux
           if-no-files-found: error
@@ -276,7 +329,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Collect the binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
@@ -321,6 +374,7 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           REF: ${{ inputs.source_ref }}
           REVISION: ${{ needs.plan.outputs.revision }}
+          PLAN_RESULT: ${{ needs.plan.result }}
           PUBLISH: ${{ inputs.publish }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           WINDOWS: ${{ needs.windows.result }}
@@ -359,10 +413,13 @@ jobs:
 
           headline='celmux 构建成功'
           [ "$failed" -eq 0 ] || headline='celmux 构建失败'
+          version="${VERSION:-未知}"
+          [ "${PLAN_RESULT:-}" = 'success' ] || version="$version（构建准备$(state "${PLAN_RESULT:-}")）"
           message=$(printf '%s\n' \
             "$headline" \
-            "版本：${VERSION:-未知}" \
+            "版本：${version}" \
             "源码：${REF:-未知} @ ${REVISION:-未知}" \
+            "构建准备：$(state "${PLAN_RESULT:-}")" \
             "Windows：$(state "${WINDOWS:-}")" \
             "Linux：$(state "${LINUX:-}")" \
             "Release：${release}" \
