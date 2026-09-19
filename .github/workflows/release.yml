@@ -188,7 +188,10 @@ jobs:
   windows:
     name: windows service
     needs: plan
-    runs-on: ubuntu-22.04
+    # 24.04 rather than 22.04: the 22.04 image ships mingw-w64 10, and the EVS
+    # codec is compiled with `-mdirect-extern-access`, an option GCC only grew
+    # in 12. Ubuntu 24.04 ships mingw-w64 13.
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
@@ -227,35 +230,44 @@ jobs:
           rustup target add x86_64-pc-windows-gnu
       - name: Build the web assets
         working-directory: source
-        run: make frontend-dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          make frontend-dist 2>&1 | tee /tmp/windows-web.log
       - name: Build the service
         working-directory: source
+        shell: bash
         run: |
-          set -eu
-          mkdir -p dist
-          amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
-          evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
-          CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
-          CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
-          cargo build -p celmux-app --bin celmux --release --locked \
-            --target x86_64-pc-windows-gnu
-          install -m 0755 target/x86_64-pc-windows-gnu/release/celmux.exe \
-            dist/celmux_windows_amd64.exe
+          set -euo pipefail
+          {
+            mkdir -p dist
+            amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
+            evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
+            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+            cargo build -p celmux-app --bin celmux --release --locked \
+              --target x86_64-pc-windows-gnu
+            install -m 0755 target/x86_64-pc-windows-gnu/release/celmux.exe \
+              dist/celmux_windows_amd64.exe
+          } 2>&1 | tee /tmp/windows-service.log
       # The desktop client is still being built out, so a failure here leaves
       # the service release alone instead of holding it back.
       - name: Build the desktop client
         continue-on-error: true
         working-directory: source
+        shell: bash
         run: |
-          set -eu
-          amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
-          evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
-          CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
-          CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
-          cargo build -p celmux-desktop --bin celmux-desktop --release --locked \
-            --target x86_64-pc-windows-gnu
-          install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-desktop.exe \
-            dist/celmux-desktop_windows_amd64.exe
+          set -euo pipefail
+          {
+            amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
+            evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
+            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+            cargo build -p celmux-desktop --bin celmux-desktop --release --locked \
+              --target x86_64-pc-windows-gnu
+            install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-desktop.exe \
+              dist/celmux-desktop_windows_amd64.exe
+          } 2>&1 | tee /tmp/windows-desktop.log
       - name: Keep the binaries
         uses: actions/upload-artifact@v6
         with:
@@ -264,6 +276,28 @@ jobs:
           path: |
             source/dist/celmux_windows_amd64.exe
             source/dist/celmux-desktop_windows_amd64.exe
+      - name: Report the failure
+        if: failure()
+        shell: bash
+        run: |
+          set -u
+          for log in /tmp/*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log"
+            tail -45 "$log"
+            # A failed step's log needs repository admin rights to read, but
+            # this annotation does not, so the tail travels as one.
+            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
+              sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error::${log##*/}:${escaped}"
+          done
+      - name: Keep the build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-build-logs
+          if-no-files-found: ignore
+          path: /tmp/*.log
 
   linux:
     name: linux service
@@ -271,6 +305,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
+      # `make build-amd64` passes its own BUILD_TAG to cargo, so the version
+      # has to be named the way the Makefile looks it up.
+      BUILD_TAG: ${{ needs.plan.outputs.version }}
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check the source out
@@ -288,6 +325,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             source/.build-cache
           key: linux-musl-${{ hashFiles('source/Cargo.lock') }}
       - name: Set the Node.js version up
@@ -310,9 +348,36 @@ jobs:
           sudo tar -xJf /tmp/zig.tar.xz -C /opt
           sudo ln -sf "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
           zig version
-      - name: Build both architectures
+          # The arm64 artifact is linked by zigbuild's LLD, which is what
+          # `.cargo/config.toml` expects for that target.
+          command -v cargo-zigbuild >/dev/null 2>&1 ||
+            cargo install --locked cargo-zigbuild
+      - name: Build linux/amd64
         working-directory: source
-        run: make build-all
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build-amd64 2>&1 | tee /tmp/linux-amd64.log
+      # `make build-arm64` expects a compiler for the target to be in the
+      # environment already; zigbuild is what supplies it (`aarch64-linux-musl-gcc`
+      # and the linker), so this is the Makefile's own recipe with cargo
+      # zigbuild in place of cargo build.
+      - name: Build linux/arm64
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            mkdir -p dist
+            amrwb=$(sh scripts/build-amrwb-native.sh aarch64-unknown-linux-musl)
+            evs=$(sh scripts/build-evs-native.sh aarch64-unknown-linux-musl)
+            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+            cargo zigbuild -p celmux-app --bin celmux --release --locked \
+              --target aarch64-unknown-linux-musl
+            install -m 0750 target/aarch64-unknown-linux-musl/release/celmux \
+              dist/celmux_linux_arm64
+          } 2>&1 | tee /tmp/linux-arm64.log
       - name: Keep the binaries
         uses: actions/upload-artifact@v6
         with:
@@ -321,6 +386,26 @@ jobs:
           path: |
             source/dist/celmux_linux_amd64
             source/dist/celmux_linux_arm64
+      - name: Report the failure
+        if: failure()
+        shell: bash
+        run: |
+          set -u
+          for log in /tmp/*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log"
+            tail -45 "$log"
+            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
+              sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error::${log##*/}:${escaped}"
+          done
+      - name: Keep the build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-build-logs
+          if-no-files-found: ignore
+          path: /tmp/*.log
 
   publish:
     name: publish
