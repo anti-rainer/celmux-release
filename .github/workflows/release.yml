@@ -227,6 +227,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             source/.build-cache
           key: celmux-linux-amd64-${{ hashFiles('source/Cargo.lock') }}
       - name: Set the Node.js version up
@@ -240,12 +241,8 @@ jobs:
         run: |
           set -eux
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xz-utils musl-tools
+          sudo apt-get install -y --no-install-recommends xz-utils
           rustup target add x86_64-unknown-linux-musl
-          # Ubuntu's musl-tools installs the compiler as `musl-gcc`; ring and
-          # cc-rs look for the target-prefixed name (Debian ships it under that
-          # name, which is how a development machine has it).
-          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
           # The codec scripts build through zig for musl, exactly as a
           # development machine does.
           curl -fsSL -o /tmp/zig.tar.xz \
@@ -253,12 +250,32 @@ jobs:
           sudo tar -xJf /tmp/zig.tar.xz -C /opt
           sudo ln -sf "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
           zig version
+          command -v cargo-zigbuild >/dev/null 2>&1 ||
+            cargo install --locked cargo-zigbuild
+      # Both architectures go through zigbuild. The musl target links
+      # `-static-pie`, and the AMR-WB wrapper object that cc-rs compiles is not
+      # position independent when it goes through a musl gcc, which is what a
+      # plain `cargo build` here ends up doing: the link then fails with
+      # `relocation R_X86_64_32S ... can not be used when making a PIE object`.
+      # zigbuild supplies a compiler that produces PIC objects and links with
+      # its own LLD, which is also how the arm64 asset is built.
       - name: Build celmux_linux_amd64
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          make build-amd64 2>&1 | tee /tmp/celmux_linux_amd64.log
+          {
+            make frontend-dist
+            mkdir -p dist
+            amrwb=$(sh scripts/build-amrwb-native.sh x86_64-unknown-linux-musl)
+            evs=$(sh scripts/build-evs-native.sh x86_64-unknown-linux-musl)
+            CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
+            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
+            cargo zigbuild -p celmux-app --bin celmux --release --locked \
+              --target x86_64-unknown-linux-musl
+            install -m 0750 target/x86_64-unknown-linux-musl/release/celmux \
+              dist/celmux_linux_amd64
+          } 2>&1 | tee /tmp/celmux_linux_amd64.log
       - name: Keep the asset
         uses: actions/upload-artifact@v6
         with:
@@ -273,11 +290,18 @@ jobs:
           for log in /tmp/*.log; do
             [ -f "$log" ] || continue
             echo "--- $log"
-            tail -45 "$log"
+            tail -45 "$log" | cut -c1-200
             # A failed step's log needs repository admin rights to read, but
             # this annotation does not, so the tail travels as one.
-            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
-              sed ':a;N;$!ba;s/\n/%0A/g')
+            highlights=$(
+              {
+                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
+                  tail -10
+                tail -4 "$log"
+              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
+            )
+            escaped=$(printf '%s' "$highlights" |
+              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::error::${log##*/}:${escaped}"
           done
       - name: Keep the build logs
@@ -372,9 +396,16 @@ jobs:
           for log in /tmp/*.log; do
             [ -f "$log" ] || continue
             echo "--- $log"
-            tail -45 "$log"
-            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
-              sed ':a;N;$!ba;s/\n/%0A/g')
+            tail -45 "$log" | cut -c1-200
+            highlights=$(
+              {
+                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
+                  tail -10
+                tail -4 "$log"
+              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
+            )
+            escaped=$(printf '%s' "$highlights" |
+              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::error::${log##*/}:${escaped}"
           done
       - name: Keep the build logs
@@ -459,9 +490,16 @@ jobs:
           for log in /tmp/*.log; do
             [ -f "$log" ] || continue
             echo "--- $log"
-            tail -45 "$log"
-            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
-              sed ':a;N;$!ba;s/\n/%0A/g')
+            tail -45 "$log" | cut -c1-200
+            highlights=$(
+              {
+                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
+                  tail -10
+                tail -4 "$log"
+              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
+            )
+            escaped=$(printf '%s' "$highlights" |
+              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::error::${log##*/}:${escaped}"
           done
       - name: Keep the build logs
@@ -551,9 +589,16 @@ jobs:
           for log in /tmp/*.log; do
             [ -f "$log" ] || continue
             echo "--- $log"
-            tail -45 "$log"
-            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
-              sed ':a;N;$!ba;s/\n/%0A/g')
+            tail -45 "$log" | cut -c1-200
+            highlights=$(
+              {
+                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
+                  tail -10
+                tail -4 "$log"
+              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
+            )
+            escaped=$(printf '%s' "$highlights" |
+              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::error::${log##*/}:${escaped}"
           done
       - name: Keep the build logs
@@ -636,9 +681,16 @@ jobs:
           for log in /tmp/*.log; do
             [ -f "$log" ] || continue
             echo "--- $log"
-            tail -45 "$log"
-            escaped=$(tail -45 "$log" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
-              sed ':a;N;$!ba;s/\n/%0A/g')
+            tail -45 "$log" | cut -c1-200
+            highlights=$(
+              {
+                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
+                  tail -10
+                tail -4 "$log"
+              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
+            )
+            escaped=$(printf '%s' "$highlights" |
+              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::warning::Windows 桌面端没有编出来（不影响本次发布）：${log##*/}:${escaped}"
           done
       - name: Keep the build logs
