@@ -665,6 +665,12 @@ jobs:
             cargo build -p celmux-desktop --bin celmux-desktop --release --locked \
               --target x86_64-pc-windows-gnu
             install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-desktop.exe \
+              dist/celmux-desktop_win_amd64.exe
+            # The asset is the installer, and the client travels inside it.
+            CELMUX_SETUP_PAYLOAD="$PWD/dist/celmux-desktop_win_amd64.exe" \
+            cargo build -p celmux-setup --bin celmux-setup --release --locked \
+              --target x86_64-pc-windows-gnu --features embed
+            install -m 0755 target/x86_64-pc-windows-gnu/release/celmux-setup.exe \
               dist/celmux_win_amd64_desktop.exe
           } 2>&1 | tee /tmp/celmux_win_amd64_desktop.exe.log
       - name: Keep the asset
