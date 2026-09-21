@@ -1,0 +1,56 @@
+# The source of every asset lives in another repository, and that repository is
+# private: this checkout names it and authenticates with the `celmux_pat`
+# secret instead of the run's own token. The cargo and npm caches are restored
+# here too, because every build job needs exactly these three things and
+# nothing else before its own toolchain step.
+name: fetch the Celmux source
+description: Check anti-rainer/celmux out at a ref and restore its build caches.
+
+inputs:
+  source-ref:
+    description: Branch of anti-rainer/celmux to build
+    required: true
+  token:
+    description: Token that can read anti-rainer/celmux
+    required: true
+  cache-key:
+    description: Prefix of this job's cargo cache key
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check the source out
+      uses: actions/checkout@v5
+      with:
+        repository: anti-rainer/celmux
+        ref: ${{ inputs.source-ref }}
+        token: ${{ inputs.token }}
+        # The clone happens with the token; nothing later needs it, so it is
+        # not left in the checkout for the build to read.
+        persist-credentials: false
+        path: source
+        fetch-depth: 0
+    # Hashing the lockfile here rather than through `hashFiles` keeps the
+    # cache key visible in the log and independent of where the expression is
+    # evaluated.
+    - name: Hash the lockfile
+      id: lock
+      shell: bash
+      run: echo "key=$(sha256sum source/Cargo.lock | cut -c1-32)" >> "$GITHUB_OUTPUT"
+    - name: Cache cargo and the native codecs
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          ~/.cargo/bin
+          ~/.cache/celmux-zig
+          source/.build-cache
+        key: ${{ inputs.cache-key }}-${{ steps.lock.outputs.key }}
+    - name: Set the Node.js version up
+      uses: actions/setup-node@v6
+      with:
+        node-version: '22'
+        cache: npm
+        cache-dependency-path: source/web/package-lock.json

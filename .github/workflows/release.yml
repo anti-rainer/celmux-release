@@ -9,8 +9,16 @@
 #
 #   source_ref  which source branch to build: main (default), rc, beta
 #   version     build version; empty continues the last release (+0.0.1)
+#   notes       what the release says, used only when `publish` is checked
 #   publish     create the release; unchecked keeps the binaries in the run
 #   notify      report the result to Telegram
+#
+# `notes` is one line in the form, so a line break is written `\n` - the
+# publish step turns those escapes into real newlines and appends the standard
+# footer (source ref, revision, which installer takes which asset). Leaving it
+# empty publishes the footer alone. Re-running with a tag that already exists
+# uploads the assets over it and rewrites the body only when `notes` is filled
+# in, so a curated body is never silently replaced.
 #
 # A run that does not publish still builds everything: the version gains a
 # `-dev.<date>-<revision>` marker instead, so a test build cannot be mistaken
@@ -28,7 +36,10 @@
 #   celmux_win_amd64_desktop.exe    windows desktop, amd64 (unfinished)
 #
 # The installers fetch `celmux_linux_<arch>` and `celmux_win_amd64.exe`, and the
-# service's own updater matches those names, so none of them may drift.
+# service's own updater matches those names, so none of them may drift. Only
+# these five ever reach the release: a job that fails keeps its build logs as an
+# artifact, and the publish step picks the assets by name so a log can never
+# travel as one.
 #
 # The desktop links the host's glibc and opens X11, Wayland, GL and Vulkan with
 # dlopen, so it builds on a runner of its own architecture (amd64 on 22.04,
@@ -36,6 +47,11 @@
 # on x86. The Windows half needs a mingw-w64 whose GCC knows
 # `-mdirect-extern-access` (GCC 12+), which is why those jobs are on 24.04
 # rather than 22.04.
+#
+# The Vue bundle is part of the service's binary, so it is built once by the
+# `frontend` job and handed to the three service jobs as an artifact. The
+# desktop does not embed it at all (`celmux-app` is compiled without its `web`
+# feature), so those two jobs skip it and their Node.js setup entirely.
 #
 # The Windows desktop is still being built out: its job may fail without
 # failing the run, and a release then simply carries the other four assets.
@@ -62,6 +78,10 @@ on:
         description: '构建版本号（留空 = 上一个 release + 0.0.1）'
         type: string
         default: ''
+      notes:
+        description: '更新内容（勾选发布 release 时写入；`\n` 表示换行，留空只写自动说明）'
+        type: string
+        default: ''
       publish:
         description: '发布 release'
         type: boolean
@@ -80,13 +100,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  ZIG_VERSION: 0.16.0
   CARGO_TERM_COLOR: always
 
 jobs:
   plan:
     name: plan
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.pick.outputs.version }}
       revision: ${{ steps.pick.outputs.revision }}
@@ -198,12 +218,44 @@ jobs:
             echo "revision=$revision"
           } >> "$GITHUB_OUTPUT"
 
+  # The Vue bundle is embedded in the service binary and is identical for every
+  # service asset, so it is built (and linted, type-checked) exactly once here
+  # instead of five times. A front end that does not build fails the run before
+  # any asset job starts.
+  frontend:
+    name: frontend
+    needs: plan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check this workflow's repository out
+        uses: actions/checkout@v5
+      - name: Check the source out
+        uses: ./.github/actions/fetch-source
+        with:
+          source-ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          cache-key: celmux-frontend
+      - name: Build the web assets
+        working-directory: source
+        run: make frontend-dist
+      - name: Keep the web assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-dist
+          if-no-files-found: error
+          path: source/web/dist
+      - name: Report the failure
+        uses: ./.github/actions/report-failure
+        with:
+          asset: celmux-frontend
+
   # ---------------------------------------------------------------- assets
   # Each job builds exactly one asset, named the way the release needs it.
 
   linux-amd64:
     name: celmux_linux_amd64
-    needs: plan
+    needs: [plan, frontend]
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
@@ -212,46 +264,23 @@ jobs:
       BUILD_TAG: ${{ needs.plan.outputs.version }}
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
-      - name: Check the source out
+      - name: Check this workflow's repository out
         uses: actions/checkout@v5
+      - name: Check the source out
+        uses: ./.github/actions/fetch-source
         with:
-          repository: anti-rainer/celmux
-          ref: ${{ inputs.source_ref }}
+          source-ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
-          persist-credentials: false
-          path: source
-          fetch-depth: 0
-      - name: Cache cargo and the native codecs
-        uses: actions/cache@v5
+          cache-key: celmux-linux-amd64
+      - name: Take the web assets
+        uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            source/.build-cache
-          key: celmux-linux-amd64-${{ hashFiles('source/Cargo.lock') }}
-      - name: Set the Node.js version up
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: source/web/package-lock.json
+          name: frontend-dist
+          path: source/web/dist
       - name: Install the musl toolchain
-        working-directory: source
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xz-utils
-          rustup target add x86_64-unknown-linux-musl
-          # The codec scripts build through zig for musl, exactly as a
-          # development machine does.
-          curl -fsSL -o /tmp/zig.tar.xz \
-            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          sudo tar -xJf /tmp/zig.tar.xz -C /opt
-          sudo ln -sf "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
-          zig version
-          command -v cargo-zigbuild >/dev/null 2>&1 ||
-            cargo install --locked cargo-zigbuild
+        uses: ./.github/actions/zigbuild-toolchain
+        with:
+          target: x86_64-unknown-linux-musl
       # Both architectures go through zigbuild. The musl target links
       # `-static-pie`, and the AMR-WB wrapper object that cc-rs compiles is not
       # position independent when it goes through a musl gcc, which is what a
@@ -265,7 +294,6 @@ jobs:
         run: |
           set -euo pipefail
           {
-            make frontend-dist
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh x86_64-unknown-linux-musl)
             evs=$(sh scripts/build-evs-native.sh x86_64-unknown-linux-musl)
@@ -283,85 +311,36 @@ jobs:
           if-no-files-found: error
           path: source/dist/celmux_linux_amd64
       - name: Report the failure
-        if: failure()
-        shell: bash
-        run: |
-          set -u
-          for log in /tmp/*.log; do
-            [ -f "$log" ] || continue
-            echo "--- $log"
-            tail -45 "$log" | cut -c1-200
-            # A failed step's log needs repository admin rights to read, but
-            # this annotation does not, so the tail travels as one.
-            highlights=$(
-              {
-                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
-                  tail -10
-                tail -4 "$log"
-              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
-            )
-            escaped=$(printf '%s' "$highlights" |
-              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::error::${log##*/}:${escaped}"
-          done
-      - name: Keep the build logs
-        if: failure()
-        uses: actions/upload-artifact@v6
+        uses: ./.github/actions/report-failure
         with:
-          name: celmux-linux-amd64-logs
-          if-no-files-found: ignore
-          path: /tmp/*.log
+          asset: celmux-linux-amd64
 
   linux-arm64:
     name: celmux_linux_arm64
-    needs: plan
+    needs: [plan, frontend]
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
       BUILD_TAG: ${{ needs.plan.outputs.version }}
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
-      - name: Check the source out
+      - name: Check this workflow's repository out
         uses: actions/checkout@v5
+      - name: Check the source out
+        uses: ./.github/actions/fetch-source
         with:
-          repository: anti-rainer/celmux
-          ref: ${{ inputs.source_ref }}
+          source-ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
-          persist-credentials: false
-          path: source
-          fetch-depth: 0
-      - name: Cache cargo and the native codecs
-        uses: actions/cache@v5
+          cache-key: celmux-linux-arm64
+      - name: Take the web assets
+        uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            source/.build-cache
-          key: celmux-linux-arm64-${{ hashFiles('source/Cargo.lock') }}
-      - name: Set the Node.js version up
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: source/web/package-lock.json
+          name: frontend-dist
+          path: source/web/dist
       - name: Install the musl toolchain
-        working-directory: source
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xz-utils
-          rustup target add aarch64-unknown-linux-musl
-          curl -fsSL -o /tmp/zig.tar.xz \
-            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          sudo tar -xJf /tmp/zig.tar.xz -C /opt
-          sudo ln -sf "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
-          zig version
-          # `.cargo/config.toml` links this artifact with zigbuild's LLD, and
-          # zigbuild is also what supplies the `aarch64-linux-musl-gcc` that
-          # ring's build script looks for.
-          command -v cargo-zigbuild >/dev/null 2>&1 ||
-            cargo install --locked cargo-zigbuild
+        uses: ./.github/actions/zigbuild-toolchain
+        with:
+          target: aarch64-unknown-linux-musl
       # `make build-arm64` expects a compiler for the target to be in the
       # environment already; this is the Makefile's own recipe with cargo
       # zigbuild in place of cargo build.
@@ -371,7 +350,6 @@ jobs:
         run: |
           set -euo pipefail
           {
-            make frontend-dist
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh aarch64-unknown-linux-musl)
             evs=$(sh scripts/build-evs-native.sh aarch64-unknown-linux-musl)
@@ -389,83 +367,39 @@ jobs:
           if-no-files-found: error
           path: source/dist/celmux_linux_arm64
       - name: Report the failure
-        if: failure()
-        shell: bash
-        run: |
-          set -u
-          for log in /tmp/*.log; do
-            [ -f "$log" ] || continue
-            echo "--- $log"
-            tail -45 "$log" | cut -c1-200
-            highlights=$(
-              {
-                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
-                  tail -10
-                tail -4 "$log"
-              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
-            )
-            escaped=$(printf '%s' "$highlights" |
-              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::error::${log##*/}:${escaped}"
-          done
-      - name: Keep the build logs
-        if: failure()
-        uses: actions/upload-artifact@v6
+        uses: ./.github/actions/report-failure
         with:
-          name: celmux-linux-arm64-logs
-          if-no-files-found: ignore
-          path: /tmp/*.log
+          asset: celmux-linux-arm64
 
   win-amd64:
     name: celmux_win_amd64.exe
-    needs: plan
-    # 24.04 rather than 22.04: the 22.04 image ships mingw-w64 10, and the EVS
-    # codec is compiled with `-mdirect-extern-access`, an option GCC only grew
-    # in 12. Ubuntu 24.04 ships mingw-w64 13.
+    needs: [plan, frontend]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
-      - name: Check the source out
+      - name: Check this workflow's repository out
         uses: actions/checkout@v5
+      - name: Check the source out
+        uses: ./.github/actions/fetch-source
         with:
-          repository: anti-rainer/celmux
-          ref: ${{ inputs.source_ref }}
+          source-ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
-          persist-credentials: false
-          path: source
-          fetch-depth: 0
-      - name: Cache cargo and the native codecs
-        uses: actions/cache@v5
+          cache-key: celmux-win-amd64
+      - name: Take the web assets
+        uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            source/.build-cache
-          key: celmux-win-amd64-${{ hashFiles('source/Cargo.lock') }}
-      - name: Set the Node.js version up
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: source/web/package-lock.json
+          name: frontend-dist
+          path: source/web/dist
       - name: Install the cross toolchain
-        # Inside the source tree, so the target lands on the toolchain the
-        # repository pins rather than on the runner's default one.
-        working-directory: source
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64
-          rustup target add x86_64-pc-windows-gnu
+        uses: ./.github/actions/mingw-toolchain
       - name: Build celmux_win_amd64.exe
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           {
-            make frontend-dist
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
             evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
@@ -483,32 +417,9 @@ jobs:
           if-no-files-found: error
           path: source/dist/celmux_win_amd64.exe
       - name: Report the failure
-        if: failure()
-        shell: bash
-        run: |
-          set -u
-          for log in /tmp/*.log; do
-            [ -f "$log" ] || continue
-            echo "--- $log"
-            tail -45 "$log" | cut -c1-200
-            highlights=$(
-              {
-                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
-                  tail -10
-                tail -4 "$log"
-              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
-            )
-            escaped=$(printf '%s' "$highlights" |
-              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::error::${log##*/}:${escaped}"
-          done
-      - name: Keep the build logs
-        if: failure()
-        uses: actions/upload-artifact@v6
+        uses: ./.github/actions/report-failure
         with:
-          name: celmux-win-amd64-logs
-          if-no-files-found: ignore
-          path: /tmp/*.log
+          asset: celmux-win-amd64
 
   linux-amd64-desktop:
     name: celmux_linux_amd64_desktop.deb
@@ -522,29 +433,14 @@ jobs:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
       DEB_ARCH: amd64
     steps:
-      - name: Check the source out
+      - name: Check this workflow's repository out
         uses: actions/checkout@v5
+      - name: Check the source out
+        uses: ./.github/actions/fetch-source
         with:
-          repository: anti-rainer/celmux
-          ref: ${{ inputs.source_ref }}
+          source-ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
-          persist-credentials: false
-          path: source
-          fetch-depth: 0
-      - name: Cache cargo and the native codecs
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            source/.build-cache
-          key: celmux-linux-amd64-desktop-${{ hashFiles('source/Cargo.lock') }}
-      - name: Set the Node.js version up
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: source/web/package-lock.json
+          cache-key: celmux-linux-amd64-desktop
       - name: Install the build libraries
         run: |
           set -eux
@@ -553,7 +449,8 @@ jobs:
           # need no headers; ALSA is linked, so it does.
           sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
       # `make build-desktop` names its output `_linux_amd64` whatever host it
-      # ran on, so this is that recipe with the release's name on the file.
+      # ran on, so this is that recipe with the release's name on the file. The
+      # client does not embed the Vue bundle, so no web assets are built here.
       - name: Build celmux_linux_amd64_desktop.deb
         working-directory: source
         shell: bash
@@ -561,7 +458,6 @@ jobs:
           set -euo pipefail
           host=$(rustc -vV | sed -n 's/^host: //p')
           {
-            make frontend-dist
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh "$host")
             evs=$(sh scripts/build-evs-native.sh "$host")
@@ -582,32 +478,9 @@ jobs:
           if-no-files-found: error
           path: source/dist/celmux_linux_amd64_desktop.deb
       - name: Report the failure
-        if: failure()
-        shell: bash
-        run: |
-          set -u
-          for log in /tmp/*.log; do
-            [ -f "$log" ] || continue
-            echo "--- $log"
-            tail -45 "$log" | cut -c1-200
-            highlights=$(
-              {
-                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
-                  tail -10
-                tail -4 "$log"
-              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
-            )
-            escaped=$(printf '%s' "$highlights" |
-              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::error::${log##*/}:${escaped}"
-          done
-      - name: Keep the build logs
-        if: failure()
-        uses: actions/upload-artifact@v6
+        uses: ./.github/actions/report-failure
         with:
-          name: celmux-linux-amd64-desktop-logs
-          if-no-files-found: ignore
-          path: /tmp/*.log
+          asset: celmux-linux-amd64-desktop
 
   # The client is still being built out on Windows: the job runs and its asset
   # joins the release when it compiles, and nothing else waits for it.
@@ -620,43 +493,22 @@ jobs:
     env:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
-      - name: Check the source out
+      - name: Check this workflow's repository out
         uses: actions/checkout@v5
+      - name: Check the source out
+        uses: ./.github/actions/fetch-source
         with:
-          repository: anti-rainer/celmux
-          ref: ${{ inputs.source_ref }}
+          source-ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
-          persist-credentials: false
-          path: source
-          fetch-depth: 0
-      - name: Cache cargo and the native codecs
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            source/.build-cache
-          key: celmux-win-amd64-desktop-${{ hashFiles('source/Cargo.lock') }}
-      - name: Set the Node.js version up
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: source/web/package-lock.json
+          cache-key: celmux-win-amd64-desktop
       - name: Install the cross toolchain
-        working-directory: source
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64
-          rustup target add x86_64-pc-windows-gnu
+        uses: ./.github/actions/mingw-toolchain
       - name: Build celmux_win_amd64_desktop.exe
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
           {
-            make frontend-dist
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
             evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
@@ -680,32 +532,11 @@ jobs:
           if-no-files-found: warn
           path: source/dist/celmux_win_amd64_desktop.exe
       - name: Report the failure
-        if: failure()
-        shell: bash
-        run: |
-          set -u
-          for log in /tmp/*.log; do
-            [ -f "$log" ] || continue
-            echo "--- $log"
-            tail -45 "$log" | cut -c1-200
-            highlights=$(
-              {
-                grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
-                  tail -10
-                tail -4 "$log"
-              } | cut -c1-200 | awk '!seen[$0]++' | tail -12
-            )
-            escaped=$(printf '%s' "$highlights" |
-              sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::warning::Windows 桌面端没有编出来（不影响本次发布）：${log##*/}:${escaped}"
-          done
-      - name: Keep the build logs
-        if: failure()
-        uses: actions/upload-artifact@v6
+        uses: ./.github/actions/report-failure
         with:
-          name: celmux-win-amd64-desktop-logs
-          if-no-files-found: ignore
-          path: /tmp/*.log
+          asset: celmux-win-amd64-desktop
+          severity: warning
+          prefix: 'Windows 桌面端没有编出来（不影响本次发布）：'
 
   publish:
     name: publish
@@ -720,35 +551,69 @@ jobs:
           needs['win-amd64'].result == 'success' &&
           needs['linux-amd64-desktop'].result == 'success' }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - name: Collect the assets
         uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
-      - name: List what the release carries
-        working-directory: assets
-        run: |
-          set -eu
-          ls -l
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.plan.outputs.version }}
           REF: ${{ inputs.source_ref }}
           REVISION: ${{ needs.plan.outputs.revision }}
+          NOTES: ${{ inputs.notes }}
         run: |
           set -eu
-          notes=$(printf '%s\n' \
+          ls -l assets
+
+          # The five names a release may carry, and the four an installer or an
+          # updater needs. A tolerated job that failed left its build logs as an
+          # artifact next to these, so the list is explicit: `assets/*` would
+          # publish those logs with the release.
+          assets=()
+          for name in celmux_linux_amd64 celmux_linux_arm64 celmux_win_amd64.exe \
+                      celmux_linux_amd64_desktop.deb celmux_win_amd64_desktop.exe; do
+            if [ -f "assets/$name" ]; then
+              assets+=("assets/$name")
+            fi
+          done
+          for name in celmux_linux_amd64 celmux_linux_arm64 celmux_win_amd64.exe \
+                      celmux_linux_amd64_desktop.deb; do
+            if [ ! -f "assets/$name" ]; then
+              echo "::error::缺少资产 ${name}"
+              exit 1
+            fi
+          done
+          printf '本次发布的资产：\n'
+          printf '  %s\n' "${assets[@]}"
+
+          footer=$(printf '%s\n' \
             "由 anti-rainer/celmux 的 ${REF}（${REVISION}）构建。" \
             '' \
             'Linux 服务端用 install.sh 安装，Windows 服务端用 install.ps1 安装；' \
             'Linux 桌面端是 celmux_linux_amd64_desktop.deb，Windows 桌面端是' \
             'celmux_win_amd64_desktop.exe（未完成时该资产可能缺席）。')
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" assets/* --clobber
+          if [ -n "${NOTES:-}" ]; then
+            # The dispatch form is one line; `\n` in it is what gives the
+            # release a body with paragraphs.
+            notes=$(printf '%b\n\n%s\n' "$NOTES" "$footer")
           else
-            gh release create "$TAG" assets/* --title "$TAG" --notes "$notes"
+            notes=$footer
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            # Only a filled-in body replaces one: re-uploading an asset must
+            # not overwrite notes somebody edited in the web interface.
+            if [ -n "${NOTES:-}" ]; then
+              printf '%s' "$notes" | gh release edit "$TAG" --notes-file -
+            fi
+          else
+            printf '%s' "$notes" | gh release create "$TAG" "${assets[@]}" \
+              --title "$TAG" --notes-file -
           fi
 
   # The report is the last thing that happens and runs whatever the build did:
@@ -758,6 +623,7 @@ jobs:
     needs: [plan, linux-amd64, linux-arm64, win-amd64, linux-amd64-desktop, win-amd64-desktop, publish]
     if: ${{ always() && inputs.notify == true }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       - name: Report the run
         env:

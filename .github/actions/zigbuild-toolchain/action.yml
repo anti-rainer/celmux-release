@@ -1,0 +1,53 @@
+# The musl assets cross-build through zig: `-static-pie` plus the AMR-WB
+# wrapper object that cc-rs compiles is not position independent when it goes
+# through a musl gcc, and a plain `cargo build` then fails to link with
+# `relocation R_X86_64_32S ... can not be used when making a PIE object`.
+# zigbuild supplies a compiler that produces PIC objects and links with its own
+# LLD, which is also what the arm64 asset needs from the same archive.
+name: install the zigbuild toolchain
+description: Zig, cargo-zigbuild and the musl target a linux asset builds with.
+
+inputs:
+  target:
+    description: Rust target to add, e.g. x86_64-unknown-linux-musl
+    required: true
+  zig-version:
+    description: Zig release to install
+    required: false
+    default: '0.16.0'
+  zigbuild-version:
+    description: cargo-zigbuild release to install
+    required: false
+    default: '0.23.4'
+
+runs:
+  using: composite
+  steps:
+    - name: Install the musl toolchain
+      # Inside the source tree, so the target lands on the toolchain the
+      # repository pins rather than on the runner's default one.
+      shell: bash
+      working-directory: source
+      env:
+        TARGET: ${{ inputs.target }}
+        ZIG_VERSION: ${{ inputs.zig-version }}
+        ZIGBUILD_VERSION: ${{ inputs.zigbuild-version }}
+      run: |
+        set -eux
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends xz-utils
+        rustup target add "$TARGET"
+        # The archive is unpacked under the runner's home so the cache can
+        # restore it: an unpacked `/opt` copy would have to be written as root.
+        zig_root="$HOME/.cache/celmux-zig"
+        zig_dir="$zig_root/zig-x86_64-linux-${ZIG_VERSION}"
+        if [ ! -x "$zig_dir/zig" ]; then
+          mkdir -p "$zig_root"
+          curl -fsSL -o /tmp/zig.tar.xz \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          tar -xJf /tmp/zig.tar.xz -C "$zig_root"
+        fi
+        sudo ln -sf "$zig_dir/zig" /usr/local/bin/zig
+        zig version
+        command -v cargo-zigbuild >/dev/null 2>&1 ||
+          cargo install --locked "cargo-zigbuild@${ZIGBUILD_VERSION}"

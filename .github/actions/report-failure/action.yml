@@ -1,0 +1,58 @@
+# A failed step's own log needs repository admin rights to read. The readable
+# tail of every build log travels as an annotation instead, and the full logs
+# are kept as an artifact. Both only happen when the job has already failed,
+# so a successful build pays nothing for them.
+name: report a failed build
+description: Annotate the readable tail of every build log and keep the logs.
+
+inputs:
+  asset:
+    description: Asset the job builds; names its log artifact
+    required: true
+  severity:
+    description: 'error for a required asset, warning for a tolerated one'
+    required: false
+    default: error
+  prefix:
+    description: Sentence prefixed to the annotation, empty for none
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Report the failure
+      if: failure()
+      shell: bash
+      env:
+        ASSET: ${{ inputs.asset }}
+        SEVERITY: ${{ inputs.severity }}
+        PREFIX: ${{ inputs.prefix }}
+      run: |
+        set -u
+        case "$SEVERITY" in
+          warning) level=warning ;;
+          *) level=error ;;
+        esac
+        for log in /tmp/*.log; do
+          [ -f "$log" ] || continue
+          echo "--- $log"
+          tail -45 "$log" | cut -c1-200
+          highlights=$(
+            {
+              grep -E 'error|undefined reference|cannot find|collect2|No such file|not found' "$log" |
+                tail -10
+              tail -4 "$log"
+            } | cut -c1-200 | awk '!seen[$0]++' | tail -12
+          )
+          escaped=$(printf '%s' "$highlights" |
+            sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::${level}::${PREFIX}${log##*/}:${escaped}"
+        done
+    - name: Keep the build logs
+      if: failure()
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ inputs.asset }}-logs
+        if-no-files-found: ignore
+        path: /tmp/*.log

@@ -1,0 +1,19 @@
+# The Windows assets cross-build on 24.04 because the EVS codec is compiled
+# with `-mdirect-extern-access`, an option GCC only grew in 12: 22.04 ships
+# mingw-w64 10, 24.04 ships 13.
+name: install the mingw toolchain
+description: mingw-w64 and the windows-gnu target a windows asset builds with.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the cross toolchain
+      # Inside the source tree, so the target lands on the toolchain the
+      # repository pins rather than on the runner's default one.
+      shell: bash
+      working-directory: source
+      run: |
+        set -eux
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends mingw-w64
+        rustup target add x86_64-pc-windows-gnu
