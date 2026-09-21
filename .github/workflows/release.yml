@@ -120,6 +120,11 @@ jobs:
       version: ${{ steps.pick.outputs.version }}
       revision: ${{ steps.pick.outputs.revision }}
     steps:
+      # This repository first: it is the workspace root, and the source
+      # checkout lands in `source/` below it. Checking out the root afterwards
+      # would run `git clean` over the workspace and delete that directory.
+      - name: Check this workflow's repository out
+        uses: actions/checkout@v5
       # Checked before anything else, because `actions/checkout` reports a
       # token that cannot read the private source as a plain clone failure.
       - name: Check what the token can read
@@ -189,8 +194,6 @@ jobs:
       # an old installer to everyone, so the two are compared and the diff is
       # reported; it is a warning rather than a gate because the file users
       # actually download is this repository's copy, which is the one to fix.
-      - name: Check this workflow's repository out
-        uses: actions/checkout@v5
       - name: Check the installer copies are current
         run: |
           set -eu
