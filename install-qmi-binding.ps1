@@ -21,7 +21,8 @@
 # catalog with a certificate generated on this machine:
 #
 #   * a code-signing certificate "CN=Celmux QMI Driver" is created in the
-#     current user's personal store, and its public part is added to this
+#     current user's personal store with a non-exportable key - it only ever
+#     signs this machine's own catalog - and its public part is added to this
 #     machine's Trusted Root and Trusted Publishers stores;
 #   * the module's QMI function is bound to the WinUSB driver Microsoft ships.
 #     The package contains no driver binary of our own and touches nothing but
@@ -218,16 +219,31 @@ $certificate = Get-ChildItem Cert:\CurrentUser\My |
     Where-Object { $_.Subject -eq $CertificateSubject } |
     Select-Object -First 1
 if (-not $certificate) {
+    # The key only ever signs this machine's own catalog, so it is created
+    # non-exportable: an exportable key would let any process running as this
+    # user copy it and sign a driver package Windows on this machine accepts.
     $certificate = New-SelfSignedCertificate `
         -Type CodeSigningCert `
         -Subject $CertificateSubject `
         -CertStoreLocation Cert:\CurrentUser\My `
         -KeyUsage DigitalSignature `
-        -KeyExportPolicy Exportable `
+        -KeyExportPolicy NonExportable `
         -NotAfter (Get-Date).AddYears(10)
-    Write-Host "  created $($certificate.Thumbprint)"
+    Write-Host "  created $($certificate.Thumbprint) (private key not exportable)"
 } else {
     Write-Host "  reusing $($certificate.Thumbprint)"
+    # An earlier version of this script created an exportable key. Say so
+    # instead of silently keeping it: replacing it means unbinding and binding
+    # again, which is the operator's call.
+    try {
+        $existingKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
+        if ($existingKey) {
+            $null = $existingKey.ExportParameters($true)
+            Write-Warning ("现有的 Celmux 签名证书（{0}）私钥是可导出的，来自旧版本脚本。要让这台机器改用不可导出的证书：先运行 uninstall-qmi-binding.ps1，再重新绑定一次。" -f $certificate.Thumbprint)
+        }
+    } catch {
+        # Not exportable, or not an RSA key: nothing to report.
+    }
 }
 
 $publicCert = Join-Path $stage 'celmux-qmi.cer'
