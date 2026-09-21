@@ -18,6 +18,12 @@
 #
 # Nothing here registers a system service or an auto-start entry: the three
 # control scripts are the whole interface, and scheduling is the operator's.
+#
+# The downloaded executable is verified against the release's SHA256SUMS.txt
+# (falling back to the digest GitHub records for that asset) before anything
+# is installed. A mismatch aborts and deletes the file; a source that offers
+# no checksum at all is reported as a warning, and -From files are trusted
+# because they were already on this machine.
 
 [CmdletBinding()]
 param(
@@ -61,6 +67,56 @@ function Get-RemoteFile($uri, $target) {
 
 function Write-Step($message) {
     Write-Host "==> $message"
+}
+
+function Get-ReleaseHash($uri) {
+    # The release publishes SHA256SUMS.txt next to the assets. It is the only
+    # checksum a mirror carries - the accelerator that serves the download
+    # cannot answer for GitHub's API - so it is tried first, and GitHub's own
+    # per-asset digest is the fallback for a release published before the file
+    # existed.
+    $name = ($uri -split '/')[-1]
+    if (-not $name) {
+        return $null
+    }
+    $sumsUri = $uri -replace '[^/]+$', 'SHA256SUMS.txt'
+    $sumsPath = Join-Path ([System.IO.Path]::GetTempPath()) ("celmux-sums-{0}.txt" -f [guid]::NewGuid())
+    try {
+        Get-RemoteFile $sumsUri $sumsPath
+        foreach ($line in (Get-Content -LiteralPath $sumsPath)) {
+            $parts = $line.Trim() -split '\s+'
+            if ($parts.Count -ge 2 -and $parts[1].TrimStart('*') -eq $name) {
+                return $parts[0].ToLowerInvariant()
+            }
+        }
+    } catch {
+        # No sums file in this release; the API below may still know the hash.
+    } finally {
+        Remove-Item -LiteralPath $sumsPath -ErrorAction SilentlyContinue
+    }
+
+    $tag = $null
+    if ($uri -match '/releases/latest/download/') {
+        $tag = 'latest'
+    } elseif ($uri -match '/releases/download/([^/]+)/') {
+        $tag = $Matches[1]
+    }
+    if (-not $tag) {
+        return $null
+    }
+    try {
+        $release = Invoke-RestMethod -UseBasicParsing `
+            -Uri ("https://api.github.com/repos/anti-rainer/celmux-release/releases/{0}" -f $tag) `
+            -Headers @{ 'User-Agent' = 'celmux-installer'; 'Accept' = 'application/vnd.github+json' }
+        foreach ($asset in $release.assets) {
+            if ($asset.name -eq $name -and $asset.digest) {
+                return ($asset.digest -replace '^sha256:', '').ToLowerInvariant()
+            }
+        }
+    } catch {
+        return $null
+    }
+    return $null
 }
 
 function New-Directory($path) {
@@ -127,6 +183,28 @@ if ($read -ne 2 -or $header[0] -ne 0x4D -or $header[1] -ne 0x5A) {
 $size = [Math]::Round((Get-Item -LiteralPath $binary).Length / 1MB, 1)
 Write-Step "Executable looks valid ($size MB)"
 
+# The executable is checked against the release's own checksum before it is
+# ever run. A mismatch is fatal: the file that arrived is not the file the
+# release published, and no later step can make that safe. A release that
+# carries no checksum at all (an older one, or a mirror that only mirrors the
+# asset) is a warning, because refusing to install would leave the operator
+# with no way forward; -From files are never checked, they are already local.
+if (-not $From) {
+    $name = ($Url -split '/')[-1]
+    Write-Step "Verifying the SHA-256 of $name"
+    $expected = Get-ReleaseHash $Url
+    if (-not $expected) {
+        Write-Warning "这个来源没有提供 $name 的 SHA-256 校验和，已跳过校验（旧版本发布或仅镜像了可执行文件）。"
+    } else {
+        $actual = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) {
+            Remove-Item -LiteralPath $binary -Force -ErrorAction SilentlyContinue
+            throw "校验失败：$name 的 SHA-256 是 $actual，发布的是 $expected。文件已删除，未安装任何东西。"
+        }
+        Write-Step "SHA-256 verified ($actual)"
+    }
+}
+
 $startLines = @(
     '@echo off',
     'rem Start the Celmux service from this folder.',
@@ -184,9 +262,9 @@ Write-Step 'Wrote start.bat, stop.bat and restart.bat'
 $driverDir = Join-Path $root 'driver'
 foreach ($file in 'install-qmi-binding.ps1', 'uninstall-qmi-binding.ps1', 'celmux-qmi.inf') {
     $target = Join-Path $driverDir $file
-    if ((Test-Path -LiteralPath $target) -and -not $Force) {
-        continue
-    }
+    # Fetched every run, not only when missing: the binding scripts and the
+    # service binary speak about the same hardware, and a stale copy in the
+    # install directory would bind a function this build cannot use.
     try {
         Get-RemoteFile "$RepoBase/$file" $target
     } catch {

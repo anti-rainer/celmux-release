@@ -38,6 +38,13 @@ param(
     [string]$Vendor,
     # Bind one function number instead of the discovered one.
     [int]$Interface = -1,
+    # Bind one function named by its hardware id, e.g.
+    # USB\VID_2C7C&PID_0125&MI_04. Needed when the module's QMI function is
+    # claimed by a vendor driver, so discovery cannot offer it, or when a
+    # layout has to be pinned by hand. The id is the one Windows shows for the
+    # function, and the vendor driver has to be detached from it first: a
+    # function can only have one driver.
+    [string]$HardwareId,
     # Report the plan and write the generated INF, but change nothing.
     [switch]$Preview,
     # Append everything this run prints to a file, so a caller that only sees
@@ -89,49 +96,81 @@ function Get-ModuleCandidates {
     $candidates
 }
 
-$vendors = if ($Vendor) { @(($Vendor -replace '^0x', '').ToUpperInvariant()) } else { $moduleVendors }
-$interfaces = Get-ModuleCandidates -Vendors $vendors
-if ($interfaces.Count -eq 0) {
-    throw "No module function was found for vendor(s) $($vendors -join ', '). Plug the module in and run this again."
-}
+$hardwareIdPattern = '^USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}$'
 
-# Windows classifies everything the vendor's own drivers claim. What is left is
-# a vendor-specific function, and the one that answers QMI is the RMNET data
-# function - never the serial ports, the modem or the sound card.
-$claimed = @('Ports', 'Modem', 'MEDIA', 'MEDIA ', 'Net', 'Image', 'SmartCardReader', 'AudioEndpoint')
-$candidates = @($interfaces) | Where-Object { $claimed -notcontains $_.Class }
-if ($candidates.Count -eq 0) {
-    throw "Every interface of this module is claimed by a class driver; no QMI function was found.`n" +
-        (($interfaces | ForEach-Object { "  MI_{0} {1} {2}" -f $_.Interface, $_.Class, $_.FriendlyName }) -join "`n")
-}
-
-$serial = $interfaces | Where-Object { $_.Class -eq 'Ports' } | Measure-Object -Property Interface -Maximum
-$chosen = $null
-if ($Interface -ge 0) {
-    $chosen = $candidates | Where-Object { $_.Interface -eq $Interface } | Select-Object -First 1
-    if (-not $chosen) {
-        throw "Interface $Interface is not a vendor-specific function of this module."
+if ($HardwareId) {
+    # One function named by the operator. Discovery is skipped on purpose: this
+    # form exists exactly for the functions discovery cannot offer, and it also
+    # makes a run reproducible when several modules are attached.
+    if ($HardwareId -notmatch $hardwareIdPattern) {
+        throw "HardwareId must look like USB\VID_2C7C&PID_0125&MI_04 (got '$HardwareId')."
     }
-} elseif (@($candidates).Count -eq 1) {
-    $chosen = @($candidates)[0]
+    $HardwareId = $HardwareId.ToUpperInvariant()
+    $parts = [regex]::Match($HardwareId, 'VID_([0-9A-F]{4})&PID_([0-9A-F]{4})&MI_([0-9]{2})')
+    $chosen = [pscustomobject]@{
+        VendorId     = $parts.Groups[1].Value
+        ProductId    = $parts.Groups[2].Value
+        Interface    = [int]$parts.Groups[3].Value
+        Class        = 'named on the command line'
+        FriendlyName = $HardwareId
+    }
+    $present = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+        Where-Object { $_.InstanceId -like "$HardwareId*" }
+    if (-not $present) {
+        Write-Warning "No present device matches $HardwareId. The package is still installed, and Windows binds it to the function as soon as it appears."
+    }
 } else {
-    # More than one vendor function: the RMNET function follows the serial ones
-    # in every layout seen so far, so the last one is the best guess - and a
-    # wrong guess is reversible with the uninstall script.
-    $ranked = $candidates | Sort-Object Interface -Descending
-    $chosen = $ranked[0]
-    Write-Host "This module exposes $(@($candidates).Count) vendor-specific functions; choosing MI_$('{0:d2}' -f $chosen.Interface)."
-    foreach ($candidate in $ranked) {
-        Write-Host ("  MI_{0:d2} {1} {2}" -f $candidate.Interface, $candidate.Class, $candidate.FriendlyName)
+    $vendors = if ($Vendor) { @(($Vendor -replace '^0x', '').ToUpperInvariant()) } else { $moduleVendors }
+    $interfaces = Get-ModuleCandidates -Vendors $vendors
+    if ($interfaces.Count -eq 0) {
+        throw "No module function was found for vendor(s) $($vendors -join ', '). Plug the module in and run this again."
     }
-    Write-Host 'Pass -Interface NN to bind another one.'
-}
-if ($serial.Count -gt 0 -and $chosen.Interface -le $serial.Maximum) {
-    Write-Host "Note: the serial functions reach MI_$('{0:d2}' -f $serial.Maximum) and the chosen function does not follow them." -ForegroundColor Yellow
+
+    # Windows classifies everything the vendor's own drivers claim. What is left
+    # is a vendor-specific function, and the one that answers QMI is the RMNET
+    # data function - never the serial ports, the modem or the sound card.
+    $claimed = @('Ports', 'Modem', 'MEDIA', 'MEDIA ', 'Net', 'Image', 'SmartCardReader', 'AudioEndpoint')
+    $candidates = @($interfaces) | Where-Object { $claimed -notcontains $_.Class }
+    if ($candidates.Count -eq 0) {
+        $report = ($interfaces | ForEach-Object {
+                "  USB\VID_{0}&PID_{1}&MI_{2:d2}  {3}  {4}" -f
+                    $_.VendorId, $_.ProductId, $_.Interface, $_.Class, $_.FriendlyName
+            }) -join "`n"
+        throw ("Every interface of this module is claimed by a driver, so discovery has no function to offer:`n" +
+            $report + "`n" +
+            "If the QMI/RMNET function is one of them, the vendor driver has to be detached from that one function first " +
+            "(Device Manager -> that interface -> Uninstall device), because a function can only have one driver. " +
+            "Then run this script again, or pass -HardwareId 'USB\VID_....&PID_....&MI_..' to bind it directly.")
+    }
+
+    $serial = $interfaces | Where-Object { $_.Class -eq 'Ports' } | Measure-Object -Property Interface -Maximum
+    $chosen = $null
+    if ($Interface -ge 0) {
+        $chosen = $candidates | Where-Object { $_.Interface -eq $Interface } | Select-Object -First 1
+        if (-not $chosen) {
+            throw "Interface $Interface is not a vendor-specific function of this module."
+        }
+    } elseif (@($candidates).Count -eq 1) {
+        $chosen = @($candidates)[0]
+    } else {
+        # More than one vendor function: the RMNET function follows the serial
+        # ones in every layout seen so far, so the last one is the best guess -
+        # and a wrong guess is reversible with the uninstall script.
+        $ranked = $candidates | Sort-Object Interface -Descending
+        $chosen = $ranked[0]
+        Write-Host "This module exposes $(@($candidates).Count) vendor-specific functions; choosing MI_$('{0:d2}' -f $chosen.Interface)."
+        foreach ($candidate in $ranked) {
+            Write-Host ("  MI_{0:d2} {1} {2}" -f $candidate.Interface, $candidate.Class, $candidate.FriendlyName)
+        }
+        Write-Host 'Pass -Interface NN to bind another one.'
+    }
+    if ($serial.Count -gt 0 -and $chosen.Interface -le $serial.Maximum) {
+        Write-Host "Note: the serial functions reach MI_$('{0:d2}' -f $serial.Maximum) and the chosen function does not follow them." -ForegroundColor Yellow
+    }
 }
 
-$hardwareId = 'USB\VID_{0}&PID_{1}&MI_{2:d2}' -f $chosen.VendorId, $chosen.ProductId, $chosen.Interface
-Write-Host "Module function: $hardwareId ($($chosen.Class): $($chosen.FriendlyName))"
+$boundHardwareId = 'USB\VID_{0}&PID_{1}&MI_{2:d2}' -f $chosen.VendorId, $chosen.ProductId, $chosen.Interface
+Write-Host "Module function: $boundHardwareId ($($chosen.Class))"
 
 $packageDir = $PSScriptRoot
 $template = Join-Path $packageDir 'celmux-qmi.inf'
@@ -149,13 +188,27 @@ $text = Get-Content -LiteralPath $template -Raw
 if ($text -notmatch 'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}') {
     throw "the driver template carries no hardware id to replace: $template"
 }
-$text -replace 'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}', $hardwareId |
+$text -replace 'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}', $boundHardwareId |
     Set-Content -LiteralPath $inf -Encoding Ascii
+
+# Windows will not replace a package that reports the same version as the one
+# already installed, and binding a second module writes a second hardware id
+# into a second package. Each run therefore carries its own version, built from
+# the date plus the minute so it only ever moves forward.
+$now = (Get-Date).ToUniversalTime()
+$build = [int](New-TimeSpan -Start ([datetime]'2024-01-01') -End $now).TotalDays % 60000
+$driverVersion = '{0:MM/dd/yyyy},1.0.{1}.{2}' -f $now, $build, ($now.Hour * 60 + $now.Minute)
+$text = Get-Content -LiteralPath $inf -Raw
+$rewritten = $text -replace 'DriverVer\s*=\s*\d{2}/\d{2}/\d{4},[0-9.]+', "DriverVer   = $driverVersion"
+if ($rewritten -eq $text) {
+    throw "the driver template carries no DriverVer to stamp: $template"
+}
+$rewritten | Set-Content -LiteralPath $inf -Encoding Ascii
 Write-Host "Staged the driver package in $stage"
 
 if ($Preview) {
     Write-Host "Preview: nothing was signed, trusted or installed. The generated INF binds:"
-    Select-String -LiteralPath $inf -Pattern $hardwareId.Replace('\', '\\') | ForEach-Object { "  $($_.Line.Trim())" }
+    Select-String -LiteralPath $inf -Pattern $boundHardwareId.Replace('\', '\\') | ForEach-Object { "  $($_.Line.Trim())" }
     if ($LogPath) { Stop-Transcript | Out-Null }
     exit 0
 }
@@ -214,7 +267,7 @@ Write-Host 'Rescanning devices ...'
 
 $device = Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like "USB\VID_$($chosen.VendorId)&PID_$($chosen.ProductId)&MI_$('{0:d2}' -f $chosen.Interface)*" }
 if (-not $device) {
-    Write-Warning "The bound function is not present any more; plug the module in and run this again."
+    Write-Warning "The bound function ($boundHardwareId) is not present any more; plug the module in and run this again."
     if ($LogPath) { Stop-Transcript | Out-Null }
     exit 0
 }
@@ -226,5 +279,5 @@ foreach ($entry in $device) {
         Write-Warning 'The function is still not usable; check that the package was accepted above.'
     }
 }
-Write-Host "The QMI function is bound to WinUSB; the service can claim it now."
+Write-Host "The QMI function $boundHardwareId is bound to WinUSB; the service can claim it now."
 if ($LogPath) { Stop-Transcript | Out-Null }

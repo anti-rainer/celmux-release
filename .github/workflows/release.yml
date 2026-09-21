@@ -35,6 +35,15 @@
 #   celmux_linux_amd64_desktop.deb  linux desktop, amd64   (glibc, native)
 #   celmux_win_amd64_desktop.exe    windows desktop, amd64 (unfinished)
 #
+# A release also carries SHA256SUMS.txt, generated from the assets it is about
+# to publish. The Windows installer verifies the service executable against it
+# (falling back to the digest GitHub records for the asset) before running
+# anything, and the file is what an operator can check the desktop installer
+# with by hand. It is the free half of integrity: it proves the download is the
+# bytes this release published. It is not an Authenticode signature, so Windows
+# still reports an unknown publisher - a trusted one needs a certificate the
+# project does not have.
+#
 # The installers fetch `celmux_linux_<arch>` and `celmux_win_amd64.exe`, and the
 # service's own updater matches those names, so none of them may drift. Only
 # these five ever reach the release: a job that fails keeps its build logs as an
@@ -175,6 +184,30 @@ jobs:
           persist-credentials: false
           path: source
           fetch-depth: 0
+      # The Windows packaging scripts are developed in the source repository
+      # and downloaded by users from this one. A copy that drifted apart sends
+      # an old installer to everyone, so the two are compared and the diff is
+      # reported; it is a warning rather than a gate because the file users
+      # actually download is this repository's copy, which is the one to fix.
+      - name: Check this workflow's repository out
+        uses: actions/checkout@v5
+      - name: Check the installer copies are current
+        run: |
+          set -eu
+          drifted=''
+          for file in install.ps1 install-qmi-binding.ps1 uninstall-qmi-binding.ps1 \
+                      install-driver.bat celmux-qmi.inf; do
+            if ! cmp -s "source/packaging/desktop/windows/$file" "$file"; then
+              drifted="$drifted $file"
+              echo "--- $file"
+              diff -u "$file" "source/packaging/desktop/windows/$file" | head -40 || true
+            fi
+          done
+          if [ -n "$drifted" ]; then
+            echo "::warning::本仓库里的 Windows 安装脚本与源码分支不一致：${drifted}。用户下载的是本仓库的副本，如果这次发布要带上源码分支里的改动，先把文件同步过来（cp source/packaging/desktop/windows/<文件> . ）再推送。"
+          else
+            echo 'Windows 安装脚本与源码分支一致。'
+          fi
       - name: Name the build
         id: pick
         shell: bash
@@ -590,6 +623,14 @@ jobs:
           printf '本次发布的资产：\n'
           printf '  %s\n' "${assets[@]}"
 
+          # Every installer and every operator checks the download against
+          # this file, so it is generated from the assets that are about to be
+          # published, not from a build directory that may still hold an older
+          # run's output.
+          ( cd assets && sha256sum "${assets[@]##*/}" > SHA256SUMS.txt )
+          echo '--- SHA256SUMS.txt'
+          cat assets/SHA256SUMS.txt
+
           footer=$(printf '%s\n' \
             "由 anti-rainer/celmux 的 ${REF}（${REVISION}）构建。" \
             '' \
@@ -605,7 +646,7 @@ jobs:
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release upload "$TAG" "${assets[@]}" assets/SHA256SUMS.txt --clobber
             # Only a filled-in body replaces one: re-uploading an asset must
             # not overwrite notes somebody edited in the web interface.
             if [ -n "${NOTES:-}" ]; then
@@ -613,7 +654,7 @@ jobs:
             fi
           else
             printf '%s' "$notes" | gh release create "$TAG" "${assets[@]}" \
-              --title "$TAG" --notes-file -
+              assets/SHA256SUMS.txt --title "$TAG" --notes-file -
           fi
 
   # The report is the last thing that happens and runs whatever the build did:

@@ -23,6 +23,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 
 脚本把当前目录作为运行目录：
 
+下载完成后 `install.ps1` 会先把这个可执行文件的 SHA-256 与本次发布的
+`SHA256SUMS.txt` 比对（旧发布没有这个文件时改用 GitHub 记录的资产摘要），
+不一致就直接中止并删除文件。桌面端的 `celmux_win_amd64_desktop.exe` 可以
+用同样的清单手工核对：
+
+```powershell
+certutil -hashfile celmux_win_amd64_desktop.exe SHA256
+```
+
+校验和只证明"下载到的就是这次发布上传的文件"，并不等于 Windows 的
+Authenticode 签名——本项目没有付费代码签名证书，所以安装时仍会显示未知
+发布者。
+
 ```text
 运行目录/
 ├── bin/
