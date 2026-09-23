@@ -597,6 +597,11 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          # `gh release` needs to know which repository it is talking to, and
+          # this job never checks the repository out: the assets it publishes
+          # are the ones the build jobs uploaded, and checking out here would
+          # only `git clean` the directory they were just downloaded into.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.plan.outputs.version }}
           REF: ${{ inputs.source_ref }}
           REVISION: ${{ needs.plan.outputs.revision }}
