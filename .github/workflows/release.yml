@@ -14,11 +14,13 @@
 #   notify      report the result to Telegram
 #
 # `notes` is one line in the form, so a line break is written `\n` - the
-# publish step turns those escapes into real newlines and appends the standard
-# footer (source ref, revision, which installer takes which asset). Leaving it
-# empty publishes the footer alone. Re-running with a tag that already exists
-# uploads the assets over it and rewrites the body only when `notes` is filled
-# in, so a curated body is never silently replaced.
+# publish step turns those escapes into real newlines and the release body is
+# exactly those lines: the desktop shows the body in its update panel, where a
+# footer about installers is noise. Leaving `notes` empty publishes the footer
+# alone instead, which says where the release came from and what installs what.
+# Re-running with a tag that already exists uploads the assets over it and
+# rewrites the body only when `notes` is filled in, so a curated body is never
+# silently replaced.
 #
 # A run that does not publish still builds everything: the version gains a
 # `-dev.<date>-<revision>` marker instead, so a test build cannot be mistaken
@@ -639,6 +641,10 @@ jobs:
           echo '--- SHA256SUMS.txt'
           cat assets/SHA256SUMS.txt
 
+          # What a release with no notes of its own says: where it came from
+          # and which asset installs what. A release that was given notes
+          # publishes exactly those - the client shows the body in its update
+          # panel, where a footer about installers is noise.
           footer=$(printf '%s\n' \
             "由 anti-rainer/celmux 的 ${REF}（${REVISION}）构建。" \
             '' \
@@ -647,8 +653,8 @@ jobs:
             'celmux_win_amd64_desktop.exe（未完成时该资产可能缺席）。')
           if [ -n "${NOTES:-}" ]; then
             # The dispatch form is one line; `\n` in it is what gives the
-            # release a body with paragraphs.
-            notes=$(printf '%b\n\n%s\n' "$NOTES" "$footer")
+            # release a body with one change per line.
+            notes=$(printf '%b\n' "$NOTES")
           else
             notes=$footer
           fi
