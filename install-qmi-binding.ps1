@@ -1,4 +1,4 @@
-# Copyright (c) 2026 anti-rainer
+﻿# Copyright (c) 2026 anti-rainer
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #
 # Binds a module's QMI (RMNET) function to the WinUSB driver so the service can

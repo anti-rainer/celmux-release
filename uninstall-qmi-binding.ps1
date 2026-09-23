@@ -20,10 +20,19 @@ param(
     [string[]]$InstanceFilter = @(),
     # One published name (oem42.inf) instead of every Celmux package.
     [string]$PublishedName,
+    # Append everything this run prints to a file, so a caller that only sees
+    # the exit code can show what happened. The client always passes one.
+    [string]$LogPath,
     [string]$CertificateSubject = 'CN=Celmux QMI Driver'
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($LogPath) {
+    Start-Transcript -Path $LogPath -Force | Out-Null
+}
+
+try {
 
 $packages = @()
 if ($PublishedName) {
@@ -90,3 +99,9 @@ foreach ($certificate in $certificates) {
 }
 
 Write-Host 'Done: Windows will bind the module again with whatever driver it used before.'
+
+} finally {
+    if ($LogPath) {
+        Stop-Transcript | Out-Null
+    }
+}

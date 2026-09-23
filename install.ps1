@@ -1,4 +1,4 @@
-# Celmux Windows service installer.
+﻿# Celmux Windows service installer.
 #
 # Run this inside the folder that should hold the service. That folder becomes
 # the run root: the service reads and writes `config`, `data` and `logs`
