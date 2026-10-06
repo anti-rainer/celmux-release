@@ -334,9 +334,7 @@ jobs:
           {
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh x86_64-unknown-linux-musl)
-            evs=$(sh scripts/build-evs-native.sh x86_64-unknown-linux-musl)
             CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
-            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
             cargo zigbuild -p celmux-app --bin celmux --release --locked \
               --target x86_64-unknown-linux-musl
             install -m 0750 target/x86_64-unknown-linux-musl/release/celmux \
@@ -390,9 +388,7 @@ jobs:
           {
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh aarch64-unknown-linux-musl)
-            evs=$(sh scripts/build-evs-native.sh aarch64-unknown-linux-musl)
             CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
-            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
             cargo zigbuild -p celmux-app --bin celmux --release --locked \
               --target aarch64-unknown-linux-musl
             install -m 0750 target/aarch64-unknown-linux-musl/release/celmux \
@@ -440,9 +436,7 @@ jobs:
           {
             mkdir -p dist
             amrwb=$(sh scripts/build-amrwb-native.sh x86_64-pc-windows-gnu)
-            evs=$(sh scripts/build-evs-native.sh x86_64-pc-windows-gnu)
             CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
-            CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
             cargo build -p celmux-app --bin celmux --release --locked \
               --target x86_64-pc-windows-gnu
             install -m 0755 target/x86_64-pc-windows-gnu/release/celmux.exe \

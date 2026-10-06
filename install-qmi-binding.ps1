@@ -35,9 +35,9 @@
 [CmdletBinding()]
 param(
     # Restrict discovery to one vendor, e.g. 0x2C7C. Empty means the known
-    # module vendors (Quectel and Qualcomm).
+    # module vendors (Quectel, Qualcomm and Baiwang).
     [string]$Vendor,
-    # Bind one function number instead of the discovered one.
+    # Bind one decimal function number instead of the discovered one (10 = MI_0a).
     [int]$Interface = -1,
     # Bind one function named by its hardware id, e.g.
     # USB\VID_2C7C&PID_0125&MI_04. Needed when the module's QMI function is
@@ -58,7 +58,35 @@ $ErrorActionPreference = 'Stop'
 
 # The vendors a Qualcomm-based module reports as. A module from another vendor
 # is bound by naming it: -Vendor 0x1234.
-$moduleVendors = @('2C7C', '05C6')
+$moduleVendors = @('2C7C', '05C6', '2CA3')
+
+$restartRequired = $false
+
+function Invoke-PnpUtil {
+    param([string[]]$Arguments, [string]$Operation)
+    # Native stderr is diagnostic output; the exit code decides whether the
+    # operation succeeded, including on Windows PowerShell 5.1.
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        # Native processes update the global automatic variable; do not shadow it.
+        $global:LASTEXITCODE = $null
+        $output = & pnputil.exe @Arguments 2>&1
+        $exitCode = $global:LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    $output | ForEach-Object { Write-Host "  $_" }
+    if ($null -eq $exitCode) {
+        throw "$Operation could not run pnputil.exe. Check that Windows PnPUtil is available."
+    }
+    if ($exitCode -eq 3010) {
+        $script:restartRequired = $true
+        Write-Host "$Operation requires a Windows restart (pnputil exit code 3010)."
+    } elseif ($exitCode -ne 0) {
+        throw "$Operation failed (pnputil exit code $exitCode). Check the PnPUtil output above; the driver operation did not complete."
+    }
+}
 
 function Test-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -80,14 +108,14 @@ function Get-ModuleCandidates {
     $candidates = @()
     foreach ($device in (Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
             Where-Object { $_.InstanceId -like 'USB\VID_*&PID_*&MI_*' })) {
-        $match = [regex]::Match($device.InstanceId, 'VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})&MI_([0-9]{2})')
+        $match = [regex]::Match($device.InstanceId, 'VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})&MI_([0-9A-Fa-f]{2})')
         if (-not $match.Success) { continue }
         $vendor = $match.Groups[1].Value.ToUpperInvariant()
         if ($Vendors.Count -gt 0 -and $Vendors -notcontains $vendor) { continue }
         $candidates += [pscustomobject]@{
             VendorId     = $vendor
             ProductId    = $match.Groups[2].Value.ToUpperInvariant()
-            Interface    = [int]$match.Groups[3].Value
+            Interface    = [Convert]::ToInt32($match.Groups[3].Value, 16)
             Class        = $device.Class
             FriendlyName = $device.FriendlyName
             InstanceId   = $device.InstanceId
@@ -97,7 +125,7 @@ function Get-ModuleCandidates {
     $candidates
 }
 
-$hardwareIdPattern = '^USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}$'
+$hardwareIdPattern = '^USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9A-Fa-f]{2}$'
 
 if ($HardwareId) {
     # One function named by the operator. Discovery is skipped on purpose: this
@@ -107,18 +135,18 @@ if ($HardwareId) {
         throw "HardwareId must look like USB\VID_2C7C&PID_0125&MI_04 (got '$HardwareId')."
     }
     $HardwareId = $HardwareId.ToUpperInvariant()
-    $parts = [regex]::Match($HardwareId, 'VID_([0-9A-F]{4})&PID_([0-9A-F]{4})&MI_([0-9]{2})')
+    $parts = [regex]::Match($HardwareId, 'VID_([0-9A-F]{4})&PID_([0-9A-F]{4})&MI_([0-9A-Fa-f]{2})')
     $chosen = [pscustomobject]@{
         VendorId     = $parts.Groups[1].Value
         ProductId    = $parts.Groups[2].Value
-        Interface    = [int]$parts.Groups[3].Value
+        Interface    = [Convert]::ToInt32($parts.Groups[3].Value, 16)
         Class        = 'named on the command line'
         FriendlyName = $HardwareId
     }
     $present = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
         Where-Object { $_.InstanceId -like "$HardwareId*" }
     if (-not $present) {
-        Write-Warning "No present device matches $HardwareId. The package is still installed, and Windows binds it to the function as soon as it appears."
+        Write-Warning "No present device matches $HardwareId. Connect the module before installation can verify its WinUSB binding."
     }
 } else {
     $vendors = if ($Vendor) { @(($Vendor -replace '^0x', '').ToUpperInvariant()) } else { $moduleVendors }
@@ -134,7 +162,7 @@ if ($HardwareId) {
     $candidates = @($interfaces) | Where-Object { $claimed -notcontains $_.Class }
     if ($candidates.Count -eq 0) {
         $report = ($interfaces | ForEach-Object {
-                "  USB\VID_{0}&PID_{1}&MI_{2:d2}  {3}  {4}" -f
+                "  USB\VID_{0}&PID_{1}&MI_{2:x2}  {3}  {4}" -f
                     $_.VendorId, $_.ProductId, $_.Interface, $_.Class, $_.FriendlyName
             }) -join "`n"
         throw ("Every interface of this module is claimed by a driver, so discovery has no function to offer:`n" +
@@ -159,18 +187,18 @@ if ($HardwareId) {
         # and a wrong guess is reversible with the uninstall script.
         $ranked = $candidates | Sort-Object Interface -Descending
         $chosen = $ranked[0]
-        Write-Host "This module exposes $(@($candidates).Count) vendor-specific functions; choosing MI_$('{0:d2}' -f $chosen.Interface)."
+        Write-Host "This module exposes $(@($candidates).Count) vendor-specific functions; choosing MI_$('{0:x2}' -f $chosen.Interface)."
         foreach ($candidate in $ranked) {
-            Write-Host ("  MI_{0:d2} {1} {2}" -f $candidate.Interface, $candidate.Class, $candidate.FriendlyName)
+            Write-Host ("  MI_{0:x2} {1} {2}" -f $candidate.Interface, $candidate.Class, $candidate.FriendlyName)
         }
         Write-Host 'Pass -Interface NN to bind another one.'
     }
     if ($serial.Count -gt 0 -and $chosen.Interface -le $serial.Maximum) {
-        Write-Host "Note: the serial functions reach MI_$('{0:d2}' -f $serial.Maximum) and the chosen function does not follow them." -ForegroundColor Yellow
+        Write-Host "Note: the serial functions reach MI_$('{0:x2}' -f $serial.Maximum) and the chosen function does not follow them." -ForegroundColor Yellow
     }
 }
 
-$boundHardwareId = 'USB\VID_{0}&PID_{1}&MI_{2:d2}' -f $chosen.VendorId, $chosen.ProductId, $chosen.Interface
+$boundHardwareId = 'USB\VID_{0}&PID_{1}&MI_{2:x2}' -f $chosen.VendorId, $chosen.ProductId, $chosen.Interface
 Write-Host "Module function: $boundHardwareId ($($chosen.Class))"
 
 $packageDir = $PSScriptRoot
@@ -186,10 +214,10 @@ $stage = Join-Path $env:TEMP ('celmux-qmi-' + [guid]::NewGuid().ToString('N').Su
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 $inf = Join-Path $stage 'celmux-qmi.inf'
 $text = Get-Content -LiteralPath $template -Raw
-if ($text -notmatch 'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}') {
+if ($text -notmatch 'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9A-Fa-f]{2}') {
     throw "the driver template carries no hardware id to replace: $template"
 }
-$text -replace 'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}', $boundHardwareId |
+$text -replace 'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9A-Fa-f]{2}', $boundHardwareId |
     Set-Content -LiteralPath $inf -Encoding Ascii
 
 # Windows will not replace a package that reports the same version as the one
@@ -276,24 +304,37 @@ if ($signature.Status -ne 'Valid') {
 Write-Host "  signed by $($signature.SignerCertificate.Subject)"
 
 Write-Host 'Adding the driver package ...'
-& pnputil.exe /add-driver $inf /install 2>&1 | ForEach-Object { Write-Host "  $_" }
+Invoke-PnpUtil -Arguments @('/add-driver', $inf, '/install') -Operation 'Adding the driver package'
 
 Write-Host 'Rescanning devices ...'
-& pnputil.exe /scan-devices 2>&1 | ForEach-Object { Write-Host "  $_" }
+Invoke-PnpUtil -Arguments @('/scan-devices') -Operation 'Rescanning devices'
 
-$device = Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like "USB\VID_$($chosen.VendorId)&PID_$($chosen.ProductId)&MI_$('{0:d2}' -f $chosen.Interface)*" }
-if (-not $device) {
-    Write-Warning "The bound function ($boundHardwareId) is not present any more; plug the module in and run this again."
-    if ($LogPath) { Stop-Transcript | Out-Null }
-    exit 0
+$restartHint = if ($restartRequired) { ' Windows requested a restart; restart Windows and run this script again to verify the binding.' } else { '' }
+$device = @(Get-PnpDevice -PresentOnly -ErrorAction Stop |
+    Where-Object { $_.InstanceId -like "$boundHardwareId*" })
+if ($device.Count -eq 0) {
+    throw "Cannot verify the WinUSB binding: the function ($boundHardwareId) is not present. Connect the module and run this script again.$restartHint"
 }
+$bindingFailures = @()
 foreach ($entry in $device) {
-    $problem = (Get-PnpDeviceProperty -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode').Data
-    $bound = (Get-PnpDeviceProperty -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverInfPath').Data
-    Write-Host ("{0}: status={1} problem={2} driver={3}" -f $entry.InstanceId, $entry.Status, $problem, $bound)
-    if ($problem -ne 0) {
-        Write-Warning 'The function is still not usable; check that the package was accepted above.'
+    try {
+        $problem = (Get-PnpDeviceProperty -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop).Data
+        $service = (Get-PnpDeviceProperty -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_Service' -ErrorAction Stop).Data
+        $bound = (Get-PnpDeviceProperty -InstanceId $entry.InstanceId -KeyName 'DEVPKEY_Device_DriverInfPath' -ErrorAction Stop).Data
+    } catch {
+        throw "Cannot verify the WinUSB binding for $($entry.InstanceId): $($_.Exception.Message).$restartHint"
+    }
+    Write-Host ("{0}: status={1} service={2} problem={3} driver={4}" -f $entry.InstanceId, $entry.Status, $service, $problem, $bound)
+    if ($service -ne 'WinUSB' -or $null -eq $problem -or $problem -ne 0) {
+        $bindingFailures += "$($entry.InstanceId): Service='$service', ProblemCode='$problem'"
     }
 }
+if ($bindingFailures.Count -gt 0) {
+    throw ("The QMI function is not usable: the binding must report Service=WinUSB and ProblemCode=0. " +
+        ($bindingFailures -join '; ') + ". Check the PnPUtil output and the function in Device Manager.$restartHint")
+}
 Write-Host "The QMI function $boundHardwareId is bound to WinUSB; the service can claim it now."
+if ($restartRequired) {
+    Write-Host 'The binding is verified, but Windows also requested a restart to finish the driver operation.'
+}
 if ($LogPath) { Stop-Transcript | Out-Null }

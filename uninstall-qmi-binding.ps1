@@ -1,4 +1,4 @@
-# Copyright (c) 2026 anti-rainer
+﻿# Copyright (c) 2026 anti-rainer
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 #
 # Removes the WinUSB binding installed by install-qmi-binding.ps1 and returns
@@ -27,6 +27,34 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+$restartRequired = $false
+
+function Invoke-PnpUtil {
+    param([string[]]$Arguments, [string]$Operation)
+    # Native stderr is diagnostic output; the exit code decides whether the
+    # operation succeeded, including on Windows PowerShell 5.1.
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        # Native processes update the global automatic variable; do not shadow it.
+        $global:LASTEXITCODE = $null
+        $output = & pnputil.exe @Arguments 2>&1
+        $exitCode = $global:LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    $output | ForEach-Object { Write-Host "  $_" }
+    if ($null -eq $exitCode) {
+        throw "$Operation could not run pnputil.exe. Check that Windows PnPUtil is available."
+    }
+    if ($exitCode -eq 3010) {
+        $script:restartRequired = $true
+        Write-Host "$Operation requires a Windows restart (pnputil exit code 3010)."
+    } elseif ($exitCode -ne 0) {
+        throw "$Operation failed (pnputil exit code $exitCode). Check the PnPUtil output above; the driver operation did not complete."
+    }
+}
 
 if ($LogPath) {
     Start-Transcript -Path $LogPath -Force | Out-Null
@@ -58,7 +86,7 @@ if ($InstanceFilter.Count -eq 0) {
         if (-not (Test-Path -LiteralPath $installedInf)) { continue }
         $patterns += @([regex]::Matches(
                 (Get-Content -LiteralPath $installedInf -Raw),
-                'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9]{2}'
+                'USB\\VID_[0-9A-Fa-f]{4}&PID_[0-9A-Fa-f]{4}&MI_[0-9A-Fa-f]{2}'
             ) | ForEach-Object { $_.Value + '*' })
     }
     $InstanceFilter = @($patterns | Select-Object -Unique)
@@ -74,16 +102,16 @@ if ($InstanceFilter.Count -gt 0) {
         $matched = $InstanceFilter | Where-Object { $device.InstanceId -like $_ } | Select-Object -First 1
         if (-not $matched) { continue }
         Write-Host "Removing the device node of $($device.InstanceId) ..."
-        & pnputil.exe /remove-device $device.InstanceId | ForEach-Object { Write-Host "  $_" }
+        Invoke-PnpUtil -Arguments @('/remove-device', $device.InstanceId) -Operation 'Removing the device node'
     }
 }
 
 foreach ($package in $packages) {
     Write-Host "Deleting driver package $package ..."
-    & pnputil.exe /delete-driver $package /uninstall | ForEach-Object { Write-Host "  $_" }
+    Invoke-PnpUtil -Arguments @('/delete-driver', $package, '/uninstall') -Operation "Deleting driver package $package"
 }
 
-& pnputil.exe /scan-devices | ForEach-Object { Write-Host "  $_" }
+Invoke-PnpUtil -Arguments @('/scan-devices') -Operation 'Rescanning devices'
 
 # The certificate this package created is only useful to it, so it goes too.
 $certificates = Get-ChildItem Cert:\CurrentUser\My |
@@ -98,7 +126,11 @@ foreach ($certificate in $certificates) {
     Write-Host "Removed signing certificate $($certificate.Thumbprint)"
 }
 
-Write-Host 'Done: Windows will bind the module again with whatever driver it used before.'
+if ($restartRequired) {
+    Write-Host 'The Celmux driver package was removed; restart Windows to finish removing it and restore the previous driver.'
+} else {
+    Write-Host 'Done: Windows will bind the module again with whatever driver it used before.'
+}
 
 } finally {
     if ($LogPath) {
