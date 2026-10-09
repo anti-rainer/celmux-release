@@ -15,11 +15,17 @@ runs:
       run: |
         set -eux
         apt_options=(-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=2 -o DPkg::Lock::Timeout=60)
+        # Only x86-64 assets are released. The mingw-w64 metapackage also
+        # downloads unused i686 toolchains and both runtime variants.
+        if [ -f /etc/apt/apt-mirrors.txt ]; then
+          printf '%s\n' 'http://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
+        fi
+        sudo sed -i 's|https\?://[^ /]*archive.ubuntu.com/ubuntu/\?|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
         if ! timeout 240 sudo apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update; then
           # A runner's regional Ubuntu mirror can become unreachable. Retry
           # against the official archive rather than waiting without a bound.
           sudo sed -i 's|https\?://[^ /]*archive.ubuntu.com/ubuntu/\?|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
           timeout 240 sudo apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update
         fi
-        timeout 600 sudo apt-get "${apt_options[@]}" install -y --no-install-recommends mingw-w64
+        timeout 600 sudo apt-get "${apt_options[@]}" install -y --no-install-recommends gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
         timeout 180 rustup target add x86_64-pc-windows-gnu
