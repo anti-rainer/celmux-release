@@ -14,6 +14,12 @@ runs:
       working-directory: source
       run: |
         set -eux
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends mingw-w64
-        rustup target add x86_64-pc-windows-gnu
+        apt_options=(-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=2 -o DPkg::Lock::Timeout=60)
+        if ! timeout 240 sudo apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update; then
+          # A runner's regional Ubuntu mirror can become unreachable. Retry
+          # against the official archive rather than waiting without a bound.
+          sudo sed -i 's|https\?://[^ /]*archive.ubuntu.com/ubuntu/\?|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          timeout 240 sudo apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update
+        fi
+        timeout 600 sudo apt-get "${apt_options[@]}" install -y --no-install-recommends mingw-w64
+        timeout 180 rustup target add x86_64-pc-windows-gnu
