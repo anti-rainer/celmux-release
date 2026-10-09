@@ -14,7 +14,10 @@ inputs:
   zig-version:
     description: Zig release to install
     required: false
-    default: '0.16.0'
+    # Zig 0.16 replaces musl malloc with SmpAllocator. Cross-thread frees in
+    # the service retain 64 KiB slabs and steadily grow RSS on small hosts.
+    # 0.14.1 uses musl's allocator, which returns the same workload's pages.
+    default: '0.14.1'
   zigbuild-version:
     description: cargo-zigbuild release to install
     required: false
