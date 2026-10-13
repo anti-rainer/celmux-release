@@ -611,41 +611,37 @@ jobs:
           path: |
             ~/.cargo/registry
             source/target
-          key: qt-preview-windows-6.12.0-${{ hashFiles('source/Cargo.lock') }}
-      - name: Install Qt 6.12 SDK and matching MinGW compiler
+          key: qt-preview-windows-msvc-6.12.0-${{ hashFiles('source/Cargo.lock') }}
+      - name: Install Qt 6.12 MSVC SDK
         shell: pwsh
         working-directory: source
         run: |
           python -m pip install aqtinstall==3.3.0
           if ($LASTEXITCODE -ne 0) { throw 'aqtinstall installation failed' }
-          python scripts/install-qt-sdk.py install-tool windows desktop tools_mingw1310 qt.tools.win64_mingw1310 -O C:/Qt
-          if ($LASTEXITCODE -ne 0) { throw 'MinGW installation failed' }
-          python scripts/install-qt-sdk.py install-qt windows desktop 6.12.0 win64_mingw -O C:/Qt --archives qtbase qtdeclarative qtsvg qttools qttranslations
+          python scripts/install-qt-sdk.py install-qt windows desktop 6.12.0 win64_msvc2022_64 -O C:/Qt --archives qtbase qtdeclarative qtsvg qttools qttranslations
           if ($LASTEXITCODE -ne 0) { throw 'Qt SDK installation failed' }
-          # CXX-Qt probes qmake with a cleared environment, so the compiler
-          # runtime must also be next to the Qt tools, independent of PATH.
-          Copy-Item -LiteralPath C:/Qt/Tools/mingw1310_64/bin/libstdc++-6.dll,C:/Qt/Tools/mingw1310_64/bin/libgcc_s_seh-1.dll,C:/Qt/Tools/mingw1310_64/bin/libwinpthread-1.dll -Destination C:/Qt/6.12.0/mingw_64/bin
-          & C:/Qt/6.12.0/mingw_64/bin/qmake.exe -query QT_VERSION
+          & C:/Qt/6.12.0/msvc2022_64/bin/qmake.exe -query QT_VERSION
           if ($LASTEXITCODE -ne 0) { throw 'Qt tool runtime is incomplete' }
           python scripts/collect-qt-licenses.py 6.12.0 C:/Qt/6.12.0/Licenses
           if ($LASTEXITCODE -ne 0) { throw 'Qt license collection failed' }
-          'C:/Qt/Tools/mingw1310_64/bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          'C:/Qt/6.12.0/mingw_64/bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          'QMAKE=C:/Qt/6.12.0/mingw_64/bin/qmake.exe' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          'C:/Qt/6.12.0/msvc2022_64/bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'QMAKE=C:/Qt/6.12.0/msvc2022_64/bin/qmake.exe' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Build and deploy the Windows preview
         shell: pwsh
         working-directory: source
-        env:
-          CXX: 'C:/Qt/Tools/mingw1310_64/bin/g++.exe'
-          CC: 'C:/Qt/Tools/mingw1310_64/bin/gcc.exe'
         run: |
-          rustup target add x86_64-pc-windows-gnu
+          rustup target add x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw 'Rust target installation failed' }
-          cargo clippy -p celmux-desktop-qt --features qt --all-targets --locked --target x86_64-pc-windows-gnu
+          cargo clippy -p celmux-desktop-qt --features qt --all-targets --locked --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw 'Qt preview Clippy failed' }
-          cargo build -p celmux-desktop-qt --bin celmux-desktop-qt --features qt --release --locked --target x86_64-pc-windows-gnu
+          cargo build -p celmux-desktop-qt --bin celmux-desktop-qt --features qt --release --locked --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw 'Qt preview build failed' }
-          & packaging/desktop/qt/build-preview-windows.ps1 -Binary target/x86_64-pc-windows-gnu/release/celmux-desktop-qt.exe -QtBin C:/Qt/6.12.0/mingw_64/bin -CompilerBin C:/Qt/Tools/mingw1310_64/bin -QtLicenseDirectory C:/Qt/6.12.0/Licenses -Version $env:CELMUX_BUILD_TAG
+          $redist = Get-ChildItem -LiteralPath $env:VCToolsRedistDir -Directory -Recurse | Where-Object Name -eq 'Microsoft.VC143.CRT' | Where-Object FullName -match '[\\/]x64[\\/]' | Select-Object -First 1
+          if (-not $redist) { throw 'MSVC x64 redistributable directory not found' }
+          & packaging/desktop/qt/build-preview-windows.ps1 -Binary target/x86_64-pc-windows-msvc/release/celmux-desktop-qt.exe -QtBin C:/Qt/6.12.0/msvc2022_64/bin -MsvcRuntimeDirectory $redist.FullName -QtLicenseDirectory C:/Qt/6.12.0/Licenses -Version $env:CELMUX_BUILD_TAG
           Expand-Archive -LiteralPath dist/celmux-qt-preview_win_amd64.zip -DestinationPath dist/qt-preview-validation
           $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
           $env:QT_PLUGIN_PATH = $null
