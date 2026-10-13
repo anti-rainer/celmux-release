@@ -669,9 +669,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends g++ lld dpkg-dev xvfb xauth openbox libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0 libegl1 libvulkan1 libdbus-1-3 libfontconfig1
           python -m pip install aqtinstall==3.3.0
-          python scripts/install-qt-sdk.py install-qt linux desktop 6.12.0 linux_gcc_64 -O "$RUNNER_TEMP/Qt" --archives qtbase qtdeclarative qtsvg qttools qttranslations qtwayland
+          LD_LIBRARY_PATH="$RUNNER_TEMP/Qt/6.12.0/gcc_64/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" python scripts/install-qt-sdk.py install-qt linux desktop 6.12.0 linux_gcc_64 -O "$RUNNER_TEMP/Qt" --archives qtbase qtdeclarative qtsvg qttools qttranslations qtwayland 'icu-linux-Rhel8.6-x86_64.7z'
           python scripts/collect-qt-licenses.py 6.12.0 "$RUNNER_TEMP/Qt/6.12.0/Licenses"
           echo "QMAKE=$RUNNER_TEMP/Qt/6.12.0/gcc_64/bin/qmake" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/Qt/6.12.0/gcc_64/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/Qt/6.12.0/gcc_64/bin" >> "$GITHUB_PATH"
       - name: Build and deploy the Linux preview
         working-directory: source
