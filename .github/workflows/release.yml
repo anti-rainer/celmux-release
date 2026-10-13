@@ -685,13 +685,19 @@ jobs:
           $env:QT_QPA_PLATFORM = 'windows'
           & "$PWD/dist/qt-preview-validation/celmux-desktop-host.exe" --ipc-smoke-test
           if ($LASTEXITCODE -ne 0) { throw 'Deployed backend IPC smoke failed' }
-          $commands = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test' -WindowStyle Hidden -PassThru -Wait
+          $commands = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test' -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-command.json" -RedirectStandardError "$PWD/dist/dashboard-command.stderr" -PassThru -Wait
+          Get-Content dist/dashboard-command.json
+          Get-Content dist/dashboard-command.stderr
           if ($commands.ExitCode -ne 0) { throw "Qt deployed command API smoke failed: $($commands.ExitCode)" }
           foreach ($case in @('empty', 'partial')) {
-            $scenario = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test', '--fixture-case', $case -WindowStyle Hidden -PassThru -Wait
+            $scenario = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test', '--fixture-case', $case -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-$case.json" -RedirectStandardError "$PWD/dist/dashboard-$case.stderr" -PassThru -Wait
+            Get-Content "dist/dashboard-$case.json"
+            Get-Content "dist/dashboard-$case.stderr"
             if ($scenario.ExitCode -ne 0) { throw "Qt dashboard $case smoke failed: $($scenario.ExitCode)" }
           }
-          $smoke = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-smoke-test', '--window-smoke-test-require-wm' -WindowStyle Hidden -PassThru -Wait
+          $smoke = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-smoke-test', '--window-smoke-test-require-wm' -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-windows-smoke.out" -RedirectStandardError "$PWD/dist/dashboard-windows-smoke.stderr" -PassThru -Wait
+          Get-Content dist/dashboard-windows-smoke.out
+          Get-Content dist/dashboard-windows-smoke.stderr
           if ($smoke.ExitCode -ne 0) { throw "Qt deployed window smoke failed: $($smoke.ExitCode)" }
       - uses: actions/upload-artifact@v6
         with:
@@ -700,6 +706,17 @@ jobs:
           path: |
             source/dist/celmux-qt-preview_win_amd64.zip
             source/dist/celmux-qt-preview_win_amd64.zip.sha256
+
+      - name: Preserve failed deployment for diagnosis
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: celmux-qt-windows-diagnostic
+          if-no-files-found: warn
+          path: |
+            source/dist/celmux-qt-preview_win_amd64.zip
+            source/dist/celmux-qt-preview_win_amd64.zip.sha256
+            source/dist/dashboard-*
 
   qt-linux-preview:
     name: Qt window preview / Linux
