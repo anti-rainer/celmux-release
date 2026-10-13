@@ -687,6 +687,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Deployed backend IPC smoke failed' }
           $commands = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test' -WindowStyle Hidden -PassThru -Wait
           if ($commands.ExitCode -ne 0) { throw "Qt deployed command API smoke failed: $($commands.ExitCode)" }
+          foreach ($case in @('empty', 'partial')) {
+            $scenario = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test', '--fixture-case', $case -WindowStyle Hidden -PassThru -Wait
+            if ($scenario.ExitCode -ne 0) { throw "Qt dashboard $case smoke failed: $($scenario.ExitCode)" }
+          }
           $smoke = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-smoke-test', '--window-smoke-test-require-wm' -WindowStyle Hidden -PassThru -Wait
           if ($smoke.ExitCode -ne 0) { throw "Qt deployed window smoke failed: $($smoke.ExitCode)" }
       - uses: actions/upload-artifact@v6
@@ -759,6 +763,9 @@ jobs:
           runtime="$PWD/dist/qt-preview-validation/opt/celmux-qt-preview"
           "$runtime/celmux-desktop-host" --ipc-smoke-test
           LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' "$runtime/celmux-desktop-qt" --window-command-smoke-test
+          for case in empty partial; do
+            LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' "$runtime/celmux-desktop-qt" --window-command-smoke-test --fixture-case "$case"
+          done
           LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/tmp/celmux-qt-preview-wm.log 2>&1 & wm=$!; trap "kill $wm" EXIT; "$1" --window-smoke-test --window-smoke-test-require-wm' sh "$runtime/celmux-desktop-qt"
       - uses: actions/upload-artifact@v6
         with:
