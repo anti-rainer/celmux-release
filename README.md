@@ -41,7 +41,7 @@ Authenticode 签名——本项目没有付费代码签名证书，所以安装�
 ├── bin/
 │   └── celmux.exe                  服务端
 ├── config/
-│   └── celmux.yaml                 首次启动生成，含随机 web 密码
+│   └── celmux.yaml                 初始账密 admin/admin，密码保存为 bcrypt 哈希
 ├── data/
 ├── driver/
 │   ├── celmux-qmi.inf

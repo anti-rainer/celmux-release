@@ -195,20 +195,47 @@ read_config_value() {
 		$0 ~ "^" section ":[[:space:]]*$" { inside=1; next }
 		inside && $0 !~ /^[[:space:]]/ { inside=0 }
 		inside && $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
-			sub("^[[:space:]]*" key ":[[:space:]]*", "")
-			print
+			value=substr($0, index($0, ":") + 1)
+			sub(/^[ \t]+/, "", value)
+			sub(/[ \t\r]+$/, "", value)
+			quote=substr(value, 1, 1)
+			if ((quote == "\"" || quote == sprintf("%c", 39)) && substr(value, length(value), 1) == quote)
+				value=substr(value, 2, length(value) - 2)
+			print value
 			exit
 		}
-	' "$CONFIG_FILE" | tr -d '[:space:]"'
+	' "$CONFIG_FILE"
+}
+
+write_default_config() {
+	# Keep upgrades and existing credentials intact. Create the initial config
+	# here as well, so installations of an older binary get admin/admin too.
+	[ ! -e "$CONFIG_FILE" ] || return 0
+	# Let the binary perform its one-time import from the legacy filename.
+	[ ! -e "${CONFIG_DIR}/config.yaml" ] || return 0
+	cat > "$CONFIG_FILE" <<'EOF'
+server:
+  port: 0.0.0.0:7575
+web:
+  username: admin
+  password: '$2b$12$yD2JAmRjpSiPRjdLAEdpMuRvrvfmTqDcOcyToUAJjgLWcwMGAoz4q'
+devices: []
+EOF
+	chmod 0600 "$CONFIG_FILE"
 }
 
 show_install_info() {
-	display_port="$DEFAULT_PORT"
+	display_address="0.0.0.0:$DEFAULT_PORT"
 	display_username="admin"
 	if [ -f "$CONFIG_FILE" ]; then
 		configured_port="$(read_config_value server port)"
 		configured_username="$(read_config_value web username)"
-		[ -n "$configured_port" ] && display_port="${configured_port#:}"
+		case "$configured_port" in
+			"") ;;
+			:*) display_address="0.0.0.0${configured_port}" ;;
+			*:*) display_address="$configured_port" ;;
+			*) display_address="0.0.0.0:${configured_port}" ;;
+		esac
 		[ -n "$configured_username" ] && display_username="$configured_username"
 	fi
 
@@ -219,7 +246,7 @@ show_install_info() {
 	echo "安装路径: ${INSTALL_ROOT}"
 	echo "二进制:   ${INSTALL_BIN}"
 	echo "配置文件: ${CONFIG_FILE}"
-	echo "访问地址: http://0.0.0.0:${display_port}"
+	echo "访问地址: http://${display_address}"
 	echo "登录账号: ${display_username}"
 	if [ "$CONFIG_WAS_PRESENT" -eq 0 ] && [ "$LEGACY_CONFIG_WAS_PRESENT" -eq 0 ]; then
 		echo "登录密码: admin"
@@ -498,7 +525,10 @@ start_service() {
 				echo "check: ${SERVICE_FILE} and logread -e ${SERVICE_NAME}" >&2
 				exit 1
 			fi
-			if ! "$SERVICE_FILE" restart; then
+			# stop_existing_service already stopped an upgrade. On a fresh
+			# install, restart first deletes a nonexistent ubus service and
+			# prints "Command failed: Not found" before starting it.
+			if ! "$SERVICE_FILE" start; then
 				echo "error: failed to start OpenWrt service ${SERVICE_NAME}" >&2
 				echo "check: ${SERVICE_FILE} status; logread -e ${SERVICE_NAME}" >&2
 				exit 1
@@ -514,7 +544,7 @@ start_service() {
 				[ "$attempt" -ge 5 ] || sleep 1
 			done
 			if [ "$service_ready" -ne 1 ]; then
-				echo "error: OpenWrt service ${SERVICE_NAME} is not running after restart" >&2
+				echo "error: OpenWrt service ${SERVICE_NAME} is not running after start" >&2
 				echo "check: ${SERVICE_FILE} status; logread -e ${SERVICE_NAME}" >&2
 				exit 1
 			fi
@@ -574,9 +604,12 @@ main() {
 	chmod 0750 "$INSTALL_ROOT" "${INSTALL_ROOT}/bin" "$CONFIG_DIR" "${INSTALL_ROOT}/data" "${INSTALL_ROOT}/logs"
 	stop_existing_service
 	copy_binary "$BINARY_PATH" "$INSTALL_BIN"
+	write_default_config
 	write_service
 	start_service
 	show_install_info
 }
 
-main "$@"
+if [ "${CELMUX_INSTALL_LIB_ONLY:-0}" != "1" ]; then
+	main "$@"
+fi

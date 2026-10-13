@@ -149,6 +149,8 @@ foreach ($folder in 'bin', 'config', 'data', 'logs', 'driver') {
     New-Directory (Join-Path $root $folder)
 }
 Write-Step 'Created bin, config, data, logs and driver'
+$configFile = Join-Path $root 'config\celmux.yaml'
+$configWasPresent = Test-Path -LiteralPath $configFile
 
 if ((Test-Path -LiteralPath $binary) -and -not $Force) {
     Write-Step "Keeping the installed $binary (pass -Force to replace it)"
@@ -203,6 +205,19 @@ if (-not $From) {
         }
         Write-Step "SHA-256 verified ($actual)"
     }
+}
+
+if (-not $configWasPresent) {
+    # Also seed older release binaries with the same admin/admin credentials.
+    # The single-quoted YAML literal keeps bcrypt's dollar signs intact.
+    Write-Ascii $configFile @(
+        'server:',
+        '  port: 0.0.0.0:7575',
+        'web:',
+        '  username: admin',
+        '  password: ''$2b$12$yD2JAmRjpSiPRjdLAEdpMuRvrvfmTqDcOcyToUAJjgLWcwMGAoz4q''',
+        'devices: []'
+    )
 }
 
 $startLines = @(
@@ -294,5 +309,8 @@ Write-Host 'A module whose QMI function is not bound to WinUSB yet needs one'
 Write-Host 'elevated run:  double-click install-driver.bat, which asks for it'
 Write-Host 'The service reports the same step as:  celmux --install-qmi-binding'
 Write-Host ''
-Write-Host 'The first start creates config\celmux.yaml with a generated web password.'
-Write-Host 'Open the interface with the password from that file, or change it there.'
+if ($configWasPresent) {
+    Write-Host 'Existing config\celmux.yaml and login credentials were kept.'
+} else {
+    Write-Host 'Initial login: admin/admin. config\celmux.yaml stores the bcrypt hash.'
+}
