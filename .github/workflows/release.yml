@@ -101,6 +101,10 @@ on:
         description: '发送 Telegram 通知'
         type: boolean
         default: true
+      qt_preview:
+        description: '额外构建独立 Qt 窗口预览（不会替换正式客户端）'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -569,6 +573,126 @@ jobs:
           asset: celmux-win-amd64-desktop
           severity: warning
           prefix: 'Windows 桌面端没有编出来（不影响本次发布）：'
+
+  qt-windows-preview:
+    name: Qt window preview / Windows
+    needs: plan
+    if: ${{ inputs.qt_preview == true }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
+      QT_VERSION_MAJOR: '6'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the preview source out
+        uses: actions/checkout@v5
+        with:
+          repository: anti-rainer/celmux
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Qt 6.12 SDK and matching MinGW compiler
+        shell: pwsh
+        working-directory: source
+        run: |
+          python -m pip install aqtinstall==3.3.0
+          if ($LASTEXITCODE -ne 0) { throw 'aqtinstall installation failed' }
+          python scripts/install-qt-sdk.py install-tool windows desktop tools_mingw1310 qt.tools.win64_mingw1310 -O C:/Qt
+          if ($LASTEXITCODE -ne 0) { throw 'MinGW installation failed' }
+          python scripts/install-qt-sdk.py install-qt windows desktop 6.12.0 win64_mingw -O C:/Qt --archives qtbase qtdeclarative qtsvg qttools qttranslations
+          if ($LASTEXITCODE -ne 0) { throw 'Qt SDK installation failed' }
+          python scripts/collect-qt-licenses.py 6.12.0 C:/Qt/6.12.0/Licenses
+          if ($LASTEXITCODE -ne 0) { throw 'Qt license collection failed' }
+          'C:/Qt/Tools/mingw1310_64/bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'C:/Qt/6.12.0/mingw_64/bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'QMAKE=C:/Qt/6.12.0/mingw_64/bin/qmake.exe' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build and deploy the Windows preview
+        shell: pwsh
+        working-directory: source
+        env:
+          CXX: 'C:/Qt/Tools/mingw1310_64/bin/g++.exe'
+          CC: 'C:/Qt/Tools/mingw1310_64/bin/gcc.exe'
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          if ($LASTEXITCODE -ne 0) { throw 'Rust target installation failed' }
+          cargo clippy -p celmux-desktop-qt --features qt --all-targets --locked --target x86_64-pc-windows-gnu
+          if ($LASTEXITCODE -ne 0) { throw 'Qt preview Clippy failed' }
+          cargo build -p celmux-desktop-qt --bin celmux-desktop-qt --features qt --release --locked --target x86_64-pc-windows-gnu
+          if ($LASTEXITCODE -ne 0) { throw 'Qt preview build failed' }
+          & packaging/desktop/qt/build-preview-windows.ps1 -Binary target/x86_64-pc-windows-gnu/release/celmux-desktop-qt.exe -QtBin C:/Qt/6.12.0/mingw_64/bin -CompilerBin C:/Qt/Tools/mingw1310_64/bin -QtLicenseDirectory C:/Qt/6.12.0/Licenses -Version $env:CELMUX_BUILD_TAG
+          Expand-Archive -LiteralPath dist/celmux-qt-preview_win_amd64.zip -DestinationPath dist/qt-preview-validation
+          $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
+          $env:QT_PLUGIN_PATH = $null
+          $env:QML_IMPORT_PATH = $null
+          $env:QT_QPA_PLATFORM = 'windows'
+          $smoke = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-smoke-test', '--window-smoke-test-require-wm' -WindowStyle Hidden -PassThru -Wait
+          if ($smoke.ExitCode -ne 0) { throw "Qt deployed window smoke failed: $($smoke.ExitCode)" }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: celmux-qt-preview_win_amd64.zip
+          if-no-files-found: error
+          path: |
+            source/dist/celmux-qt-preview_win_amd64.zip
+            source/dist/celmux-qt-preview_win_amd64.zip.sha256
+
+  qt-linux-preview:
+    name: Qt window preview / Linux
+    needs: plan
+    if: ${{ inputs.qt_preview == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
+      QT_VERSION_MAJOR: '6'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the preview source out
+        uses: actions/checkout@v5
+        with:
+          repository: anti-rainer/celmux
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Qt 6.12 SDK
+        working-directory: source
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends g++ lld dpkg-dev xvfb xauth openbox libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0 libegl1 libvulkan1 libdbus-1-3 libfontconfig1
+          python -m pip install aqtinstall==3.3.0
+          python scripts/install-qt-sdk.py install-qt linux desktop 6.12.0 linux_gcc_64 -O "$RUNNER_TEMP/Qt" --archives qtbase qtdeclarative qtsvg qttools qttranslations qtwayland
+          python scripts/collect-qt-licenses.py 6.12.0 "$RUNNER_TEMP/Qt/6.12.0/Licenses"
+          echo "QMAKE=$RUNNER_TEMP/Qt/6.12.0/gcc_64/bin/qmake" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/Qt/6.12.0/gcc_64/bin" >> "$GITHUB_PATH"
+      - name: Build and deploy the Linux preview
+        working-directory: source
+        env:
+          RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+        run: |
+          set -euo pipefail
+          cargo clippy -p celmux-desktop-qt --features qt --all-targets --locked
+          cargo build -p celmux-desktop-qt --bin celmux-desktop-qt --features qt --release --locked
+          QT_LICENSE_DIR="$RUNNER_TEMP/Qt/6.12.0/Licenses" VERSION="$CELMUX_BUILD_TAG" sh packaging/desktop/qt/build-preview-deb.sh target/release/celmux-desktop-qt
+          mkdir -p dist/qt-preview-validation
+          dpkg-deb -x dist/celmux-qt-preview_*.deb dist/qt-preview-validation
+          runtime="$PWD/dist/qt-preview-validation/opt/celmux-qt-preview"
+          LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/tmp/celmux-qt-preview-wm.log 2>&1 & wm=$!; trap "kill $wm" EXIT; "$1" --window-smoke-test --window-smoke-test-require-wm' sh "$runtime/celmux-desktop-qt"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: celmux-qt-preview_linux_amd64.deb
+          if-no-files-found: error
+          path: |
+            source/dist/celmux-qt-preview_*.deb
+            source/dist/celmux-qt-preview_*.deb.sha256
 
   publish:
     name: publish
