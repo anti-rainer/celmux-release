@@ -695,6 +695,12 @@ jobs:
             Get-Content "dist/dashboard-$case.stderr"
             if ($scenario.ExitCode -ne 0) { throw "Qt dashboard $case smoke failed: $($scenario.ExitCode)" }
           }
+          foreach ($case in @('normal', 'empty', 'partial')) {
+            $deviceUi = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--device-ui-smoke-test', '--fixture-case', $case -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/device-$case.json" -RedirectStandardError "$PWD/dist/device-$case.stderr" -PassThru -Wait
+            Get-Content "dist/device-$case.json"
+            Get-Content "dist/device-$case.stderr"
+            if ($deviceUi.ExitCode -ne 0) { throw "Qt deployed device UI $case smoke failed: $($deviceUi.ExitCode)" }
+          }
           $smoke = Start-Process -FilePath "$PWD/dist/qt-preview-validation/celmux-desktop-qt.exe" -ArgumentList '--window-smoke-test', '--window-smoke-test-require-wm' -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-windows-smoke.out" -RedirectStandardError "$PWD/dist/dashboard-windows-smoke.stderr" -PassThru -Wait
           Get-Content dist/dashboard-windows-smoke.out
           Get-Content dist/dashboard-windows-smoke.stderr
@@ -717,6 +723,7 @@ jobs:
             source/dist/celmux-qt-preview_win_amd64.zip
             source/dist/celmux-qt-preview_win_amd64.zip.sha256
             source/dist/dashboard-*
+            source/dist/device-*
 
   qt-linux-preview:
     name: Qt window preview / Linux
@@ -783,6 +790,10 @@ jobs:
           for case in empty partial; do
             LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' "$runtime/celmux-desktop-qt" --window-command-smoke-test --fixture-case "$case"
           done
+          for case in normal empty partial; do
+            LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' "$runtime/celmux-desktop-qt" --device-ui-smoke-test --fixture-case "$case" >"dist/device-$case.json" 2>"dist/device-$case.stderr" || { cat "dist/device-$case.json" "dist/device-$case.stderr"; exit 1; }
+            cat "dist/device-$case.json" "dist/device-$case.stderr"
+          done
           LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/tmp/celmux-qt-preview-wm.log 2>&1 & wm=$!; trap "kill $wm" EXIT; "$1" --window-smoke-test --window-smoke-test-require-wm' sh "$runtime/celmux-desktop-qt"
       - uses: actions/upload-artifact@v6
         with:
@@ -791,6 +802,17 @@ jobs:
           path: |
             source/dist/celmux-qt-preview_*.deb
             source/dist/celmux-qt-preview_*.deb.sha256
+
+      - name: Preserve failed Qt Linux deployment for diagnosis
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: celmux-qt-linux-diagnostic
+          if-no-files-found: warn
+          path: |
+            source/dist/celmux-qt-preview_*.deb
+            source/dist/celmux-qt-preview_*.deb.sha256
+            source/dist/device-*
 
   publish:
     name: publish
