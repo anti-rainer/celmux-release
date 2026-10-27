@@ -41,12 +41,11 @@ runs:
     - name: Cache cargo and the native codecs
       uses: actions/cache@v5
       with:
+        # Only the download/registry layer is cached. Cached tool binaries and
+        # native archives would be consumed as-is by the release build.
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          ~/.cargo/bin
-          ~/.cache/celmux-zig
-          source/.build-cache
         key: ${{ inputs.cache-key }}-${{ steps.lock.outputs.key }}
     - name: Set the Node.js version up
       uses: actions/setup-node@v6

@@ -28,15 +28,14 @@
 # that publishes takes the version as it stands and makes it `releases/latest`,
 # which is what both installers fetch.
 #
-# A release carries these six assets, and each one is a job of its own,
+# A release carries these five assets, and each one is a job of its own,
 # so a failure names the asset it belongs to:
 #
 #   celmux_linux_amd64           linux service, amd64      (musl, static)
 #   celmux_linux_arm64           linux service, arm64      (musl, static)
 #   celmux_win_amd64.exe         windows service, amd64    (mingw cross)
 #   celmux_linux_amd64_desktop.deb  linux Qt desktop, amd64 (glibc, native)
-#   celmux-desktop_win_amd64.zip    Windows Qt desktop, amd64 (MSVC shell/GNU host)
-#   celmux-desktop_win_amd64_setup.exe  Windows Qt desktop installer (NSIS)
+#   celmux_win_amd64_desktop.exe    Windows Qt desktop installer (MSVC shell/GNU host)
 #
 # A release also carries SHA256SUMS.txt, generated from the assets it is about
 # to publish. The Windows installer verifies the service executable against it
@@ -49,7 +48,7 @@
 #
 # The installers fetch `celmux_linux_<arch>` and `celmux_win_amd64.exe`, and the
 # service's own updater matches those names, so none of them may drift. Only
-# these six ever reach the release: a job that fails keeps its build logs as an
+# these five ever reach the release: a job that fails keeps its build logs as an
 # artifact, and the publish step picks the assets by name so a log can never
 # travel as one.
 #
@@ -105,7 +104,7 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 # One release at a time: two runs would write into the same tag.
 concurrency:
@@ -128,7 +127,7 @@ jobs:
       # checkout lands in `source/` below it. Checking out the root afterwards
       # would run `git clean` over the workspace and delete that directory.
       - name: Check this workflow's repository out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       # Checked before anything else, because `actions/checkout` reports a
       # token that cannot read the private source as a plain clone failure.
       - name: Check what the token can read
@@ -183,7 +182,7 @@ jobs:
               ;;
           esac
       - name: Check the source out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: anti-rainer/celmux
           ref: ${{ inputs.source_ref }}
@@ -220,6 +219,7 @@ jobs:
         shell: bash
         working-directory: source
         env:
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ${{ inputs.version }}
           PUBLISH: ${{ inputs.publish }}
         run: |
@@ -269,7 +269,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check this workflow's repository out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Check the source out
         uses: ./.github/actions/fetch-source
         with:
@@ -280,15 +280,45 @@ jobs:
         working-directory: source
         run: make frontend-dist
       - name: Keep the web assets
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: frontend-dist
           if-no-files-found: error
           path: source/web/dist
       - name: Report the failure
+        if: failure()
         uses: ./.github/actions/report-failure
         with:
           asset: celmux-frontend
+
+  checks:
+    name: checks
+    needs: [plan, frontend]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check this workflow's repository out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Check the source out
+        uses: ./.github/actions/fetch-source
+        with:
+          source-ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.CELMUX_PAT }}
+          cache-key: celmux-checks
+      - name: Take the web assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: frontend-dist
+          path: source/web/dist
+      - name: Format, lint, test and count
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked
+          cargo test --workspace --locked
+          sh scripts/check-test-budget.sh
 
   # ---------------------------------------------------------------- assets
   # Each job builds exactly one asset, named the way the release needs it.
@@ -305,7 +335,7 @@ jobs:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check this workflow's repository out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Check the source out
         uses: ./.github/actions/fetch-source
         with:
@@ -313,7 +343,7 @@ jobs:
           token: ${{ secrets.CELMUX_PAT }}
           cache-key: celmux-linux-amd64
       - name: Take the web assets
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: frontend-dist
           path: source/web/dist
@@ -343,12 +373,21 @@ jobs:
               dist/celmux_linux_amd64
           } 2>&1 | tee /tmp/celmux_linux_amd64.log
       - name: Keep the asset
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: celmux_linux_amd64
           if-no-files-found: error
           path: source/dist/celmux_linux_amd64
+      - name: Smoke the service binary
+        working-directory: source
+        shell: bash
+        run: |
+          set -eux
+          test -s dist/celmux_linux_amd64
+          ./dist/celmux_linux_amd64 --version | tee /tmp/celmux-version.txt
+          grep -F "${{ needs.plan.outputs.version }}" /tmp/celmux-version.txt
       - name: Report the failure
+        if: failure()
         uses: ./.github/actions/report-failure
         with:
           asset: celmux-linux-amd64
@@ -363,7 +402,7 @@ jobs:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check this workflow's repository out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Check the source out
         uses: ./.github/actions/fetch-source
         with:
@@ -371,7 +410,7 @@ jobs:
           token: ${{ secrets.CELMUX_PAT }}
           cache-key: celmux-linux-arm64
       - name: Take the web assets
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: frontend-dist
           path: source/web/dist
@@ -397,12 +436,13 @@ jobs:
               dist/celmux_linux_arm64
           } 2>&1 | tee /tmp/celmux_linux_arm64.log
       - name: Keep the asset
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: celmux_linux_arm64
           if-no-files-found: error
           path: source/dist/celmux_linux_arm64
       - name: Report the failure
+        if: failure()
         uses: ./.github/actions/report-failure
         with:
           asset: celmux-linux-arm64
@@ -416,7 +456,7 @@ jobs:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
       - name: Check this workflow's repository out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Check the source out
         uses: ./.github/actions/fetch-source
         with:
@@ -424,7 +464,7 @@ jobs:
           token: ${{ secrets.CELMUX_PAT }}
           cache-key: celmux-win-amd64
       - name: Take the web assets
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: frontend-dist
           path: source/web/dist
@@ -445,12 +485,13 @@ jobs:
               dist/celmux_win_amd64.exe
           } 2>&1 | tee /tmp/celmux_win_amd64.exe.log
       - name: Keep the asset
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: celmux_win_amd64.exe
           if-no-files-found: error
           path: source/dist/celmux_win_amd64.exe
       - name: Report the failure
+        if: failure()
         uses: ./.github/actions/report-failure
         with:
           asset: celmux-win-amd64
@@ -467,14 +508,14 @@ jobs:
       DEB_ARCH: amd64
     steps:
       - name: Check this workflow's repository out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Check the source out
         uses: ./.github/actions/fetch-source
         with:
           source-ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
           cache-key: celmux-linux-amd64-desktop
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - name: Install Qt build dependencies and SDK
@@ -531,12 +572,13 @@ jobs:
           done
           LD_LIBRARY_PATH="$runtime/lib" QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/tmp/celmux-qt-wm.log 2>&1 & wm=$!; trap "kill $wm" EXIT; "$1" --window-smoke-test --window-smoke-test-require-wm' sh "$runtime/celmux-desktop-qt"
       - name: Keep the asset
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: celmux_linux_amd64_desktop.deb
           if-no-files-found: error
           path: source/dist/celmux_linux_amd64_desktop.deb
       - name: Report the failure
+        if: failure()
         uses: ./.github/actions/report-failure
         with:
           asset: celmux-linux-amd64-desktop
@@ -549,7 +591,7 @@ jobs:
     env:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Check the backend source out
         uses: ./.github/actions/fetch-source
         with:
@@ -566,14 +608,14 @@ jobs:
           CELMUX_AMRWB_NATIVE=1 CELMUX_AMRWB_NATIVE_LIB_DIR="$amrwb" \
           CELMUX_EVS_NATIVE=1 CELMUX_EVS_NATIVE_LIB_DIR="$evs" \
           cargo build -p celmux-desktop-runtime --bin celmux-desktop-host --release --locked --target x86_64-pc-windows-gnu
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: celmux-qt-windows-backend
           if-no-files-found: error
           path: source/target/x86_64-pc-windows-gnu/release/celmux-desktop-host.exe
 
   win-amd64-desktop:
-    name: celmux-desktop_win_amd64.zip + setup.exe
+    name: celmux_win_amd64_desktop.exe
     needs: [plan, qt-windows-backend]
     runs-on: windows-2022
     timeout-minutes: 60
@@ -581,23 +623,21 @@ jobs:
       CELMUX_BUILD_TAG: ${{ needs.plan.outputs.version }}
       QT_VERSION_MAJOR: '6'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Check the Qt source out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: anti-rainer/celmux
           ref: ${{ inputs.source_ref }}
           token: ${{ secrets.CELMUX_PAT }}
           persist-credentials: false
           path: source
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: actions/cache@v5
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          path: |
-            ~/.cargo/registry
-            source/target
+          path: ~/.cargo/registry
           key: qt-bundle-windows-msvc-6.12.0-${{ hashFiles('source/Cargo.lock') }}
       - name: Install Qt 6.12 MSVC SDK
         shell: pwsh
@@ -613,7 +653,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Qt license collection failed' }
           'C:/Qt/6.12.0/msvc2022_64/bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           'QMAKE=C:/Qt/6.12.0/msvc2022_64/bin/qmake.exe' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
       - name: Install NSIS (the Windows installer)
@@ -623,7 +663,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
           makensis -VERSION
           if ($LASTEXITCODE -ne 0) { throw 'makensis is not on PATH' }
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: celmux-qt-windows-backend
           path: source/dist/backend
@@ -640,6 +680,11 @@ jobs:
           $redist = Get-ChildItem -LiteralPath $env:VCToolsRedistDir -Directory -Recurse | Where-Object Name -eq 'Microsoft.VC143.CRT' | Where-Object FullName -match '[\\/]x64[\\/]' | Select-Object -First 1
           if (-not $redist) { throw 'MSVC x64 redistributable directory not found' }
           & packaging/desktop/qt/build-windows.ps1 -Binary target/x86_64-pc-windows-msvc/release/celmux-desktop-qt.exe -BackendBinary dist/backend/celmux-desktop-host.exe -QtBin C:/Qt/6.12.0/msvc2022_64/bin -MsvcRuntimeDirectory $redist.FullName -QtLicenseDirectory C:/Qt/6.12.0/Licenses -Version $env:CELMUX_BUILD_TAG
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+          # The release asset name every installer and update panel expects:
+          # this installer is the Windows desktop client.
+          Move-Item -LiteralPath dist/celmux-desktop_win_amd64_setup.exe -Destination dist/celmux_win_amd64_desktop.exe
+          if (-not (Test-Path dist/celmux_win_amd64_desktop.exe)) { throw 'Windows installer was not produced' }
           Expand-Archive -LiteralPath dist/celmux-desktop_win_amd64.zip -DestinationPath dist/qt-desktop-validation
           $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
           $env:QT_PLUGIN_PATH = $null
@@ -667,24 +712,22 @@ jobs:
           Get-Content dist/dashboard-windows-smoke.out
           Get-Content dist/dashboard-windows-smoke.stderr
           if ($smoke.ExitCode -ne 0) { throw "Qt deployed window smoke failed: $($smoke.ExitCode)" }
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: celmux-desktop_win_amd64.zip
           if-no-files-found: error
           path: |
             source/dist/celmux-desktop_win_amd64.zip
             source/dist/celmux-desktop_win_amd64.zip.sha256
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: celmux-desktop_win_amd64_setup.exe
+          name: celmux_win_amd64_desktop.exe
           if-no-files-found: error
-          path: |
-            source/dist/celmux-desktop_win_amd64_setup.exe
-            source/dist/celmux-desktop_win_amd64_setup.exe.sha256
+          path: source/dist/celmux_win_amd64_desktop.exe
 
       - name: Preserve failed deployment for diagnosis
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: celmux-qt-windows-diagnostic
           if-no-files-found: warn
@@ -696,11 +739,14 @@ jobs:
 
   publish:
     name: publish
-    needs: [plan, linux-amd64, linux-arm64, win-amd64, linux-amd64-desktop, win-amd64-desktop]
+    needs: [plan, checks, linux-amd64, linux-arm64, win-amd64, linux-amd64-desktop, win-amd64-desktop]
+    permissions:
+      contents: write
     # `always()` lets this job report a useful skip when a required build failed.
     if: >-
       ${{ always() && inputs.publish == true &&
           needs.plan.result == 'success' &&
+          needs['checks'].result == 'success' &&
           needs['linux-amd64'].result == 'success' &&
           needs['linux-arm64'].result == 'success' &&
           needs['win-amd64'].result == 'success' &&
@@ -710,7 +756,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Collect the assets
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: assets
           merge-multiple: true
@@ -735,15 +781,13 @@ jobs:
           # publish those logs with the release.
           assets=()
           for name in celmux_linux_amd64 celmux_linux_arm64 celmux_win_amd64.exe \
-                      celmux_linux_amd64_desktop.deb celmux-desktop_win_amd64.zip \
-                      celmux-desktop_win_amd64_setup.exe; do
+                      celmux_linux_amd64_desktop.deb celmux_win_amd64_desktop.exe; do
             if [ -f "assets/$name" ]; then
               assets+=("assets/$name")
             fi
           done
           for name in celmux_linux_amd64 celmux_linux_arm64 celmux_win_amd64.exe \
-                      celmux_linux_amd64_desktop.deb celmux-desktop_win_amd64.zip \
-                      celmux-desktop_win_amd64_setup.exe; do
+                      celmux_linux_amd64_desktop.deb celmux_win_amd64_desktop.exe; do
             if [ ! -f "assets/$name" ]; then
               echo "::error::缺少资产 ${name}"
               exit 1
@@ -769,8 +813,7 @@ jobs:
             '' \
             'Linux 服务端用 install.sh 安装，Windows 服务端用 install.ps1 安装；' \
             'Linux Qt 桌面端是 celmux_linux_amd64_desktop.deb；Windows Qt 桌面端' \
-            '用 celmux-desktop_win_amd64_setup.exe 安装（自带卸载程序）；' \
-            'celmux-desktop_win_amd64.zip 供脚本化部署使用。')
+            '是 celmux_win_amd64_desktop.exe 安装程序（自带卸载程序）。')
           if [ -n "${NOTES:-}" ]; then
             # The dispatch form is one line; `\n` in it is what gives the
             # release a body with one change per line.
@@ -795,7 +838,7 @@ jobs:
   # a run that fails is exactly the one worth a message.
   notify:
     name: telegram
-    needs: [plan, linux-amd64, linux-arm64, win-amd64, linux-amd64-desktop, win-amd64-desktop, publish]
+    needs: [plan, checks, linux-amd64, linux-arm64, win-amd64, linux-amd64-desktop, win-amd64-desktop, publish]
     if: ${{ always() && inputs.notify == true }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -815,6 +858,7 @@ jobs:
           WIN_AMD64: ${{ needs['win-amd64'].result }}
           LINUX_DESKTOP: ${{ needs['linux-amd64-desktop'].result }}
           WIN_DESKTOP: ${{ needs['win-amd64-desktop'].result }}
+          CHECKS: ${{ needs['checks'].result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.version }}
         run: |
@@ -858,11 +902,12 @@ jobs:
             "版本：${version}" \
             "源码：${REF:-未知} @ ${REVISION:-未知}" \
             "构建准备：$(state "${PLAN_RESULT:-}")" \
+            "检查：$(state "${CHECKS:-}")" \
             "celmux_linux_amd64：$(state "${LINUX_AMD64:-}")" \
             "celmux_linux_arm64：$(state "${LINUX_ARM64:-}")" \
             "celmux_win_amd64.exe：$(state "${WIN_AMD64:-}")" \
             "celmux_linux_amd64_desktop.deb：$(state "${LINUX_DESKTOP:-}")" \
-            "celmux-desktop_win_amd64.zip：$(state "${WIN_DESKTOP:-}")" \
+            "celmux_win_amd64_desktop.exe：$(state "${WIN_DESKTOP:-}")" \
             "Release：${release}" \
             "运行：${RUN_URL}")
 
