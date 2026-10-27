@@ -703,17 +703,26 @@ jobs:
           Get-Content dist/dashboard-command.stderr
           if ($commands.ExitCode -ne 0) { throw "Qt deployed command API smoke failed: $($commands.ExitCode)" }
           foreach ($case in @('empty', 'partial')) {
+            # Each case starts its own shell and backend. A previous case's
+            # process can still be releasing the named pipe; do not let the
+            # next case attach to a dying instance.
+            Get-Process -Name 'celmux-desktop-qt', 'celmux-desktop-host' -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Milliseconds 700
             $scenario = Start-Process -FilePath "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test', '--fixture-case', $case -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-$case.json" -RedirectStandardError "$PWD/dist/dashboard-$case.stderr" -PassThru -Wait
             Get-Content "dist/dashboard-$case.json"
             Get-Content "dist/dashboard-$case.stderr"
             if ($scenario.ExitCode -ne 0) { throw "Qt dashboard $case smoke failed: $($scenario.ExitCode)" }
           }
           foreach ($case in @('normal', 'empty', 'partial')) {
+            Get-Process -Name 'celmux-desktop-qt', 'celmux-desktop-host' -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Milliseconds 700
             $deviceUi = Start-Process -FilePath "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -ArgumentList '--device-ui-smoke-test', '--fixture-case', $case -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/device-$case.json" -RedirectStandardError "$PWD/dist/device-$case.stderr" -PassThru -Wait
             Get-Content "dist/device-$case.json"
             Get-Content "dist/device-$case.stderr"
             if ($deviceUi.ExitCode -ne 0) { throw "Qt deployed device UI $case smoke failed: $($deviceUi.ExitCode)" }
           }
+          Get-Process -Name 'celmux-desktop-qt', 'celmux-desktop-host' -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Milliseconds 700
           $smoke = Start-Process -FilePath "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -ArgumentList '--window-smoke-test', '--window-smoke-test-require-wm' -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-windows-smoke.out" -RedirectStandardError "$PWD/dist/dashboard-windows-smoke.stderr" -PassThru -Wait
           Get-Content dist/dashboard-windows-smoke.out
           Get-Content dist/dashboard-windows-smoke.stderr
