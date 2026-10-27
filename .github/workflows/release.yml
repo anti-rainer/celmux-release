@@ -310,6 +310,12 @@ jobs:
         with:
           name: frontend-dist
           path: source/web/dist
+      - name: Install the audio build dependencies
+        # alsa-sys is part of the workspace; the runner image does not ship
+        # the development package (only the runtime library).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
       - name: Format, lint, test and count
         working-directory: source
         shell: bash
