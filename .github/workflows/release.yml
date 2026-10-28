@@ -693,6 +693,27 @@ jobs:
         shell: pwsh
         working-directory: source
         run: |
+          function Invoke-QtSmoke {
+            param(
+              [string]$Exe,
+              [string[]]$Arguments,
+              [string]$StdOut,
+              [string]$StdErr,
+              [int]$TimeoutSeconds = 120
+            )
+            $process = Start-Process -FilePath $Exe -ArgumentList $Arguments -WindowStyle Hidden -RedirectStandardOutput $StdOut -RedirectStandardError $StdErr -PassThru
+            try {
+              Wait-Process -Id $process.Id -Timeout $TimeoutSeconds -ErrorAction Stop
+            } catch {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "Qt smoke timed out after ${TimeoutSeconds}s: $($Arguments -join ' ')"
+            }
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "Qt smoke did not exit: $($Arguments -join ' ')"
+            }
+            return $process.ExitCode
+          }
           rustup target add x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw 'Rust target installation failed' }
           cargo clippy -p celmux-desktop-qt --features qt --all-targets --locked --target x86_64-pc-windows-msvc
@@ -714,28 +735,28 @@ jobs:
           $env:QT_QPA_PLATFORM = 'windows'
           & "$PWD/dist/qt-desktop-validation/celmux-desktop-host.exe" --ipc-smoke-test
           if ($LASTEXITCODE -ne 0) { throw 'Deployed backend IPC smoke failed' }
-          $commands = Start-Process -FilePath "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test' -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-command.json" -RedirectStandardError "$PWD/dist/dashboard-command.stderr" -PassThru -Wait
+          $commandExit = Invoke-QtSmoke -Exe "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -Arguments @('--window-command-smoke-test') -StdOut "$PWD/dist/dashboard-command.json" -StdErr "$PWD/dist/dashboard-command.stderr"
           Get-Content dist/dashboard-command.json
           Get-Content dist/dashboard-command.stderr
-          if ($commands.ExitCode -ne 0) { throw "Qt deployed command API smoke failed: $($commands.ExitCode)" }
+          if ($commandExit -ne 0) { throw "Qt deployed command API smoke failed: $commandExit" }
           foreach ($case in @('empty', 'partial')) {
             # Each case starts its own shell and backend. A previous case's
             # process can still be releasing the named pipe; do not let the
             # next case attach to a dying instance.
             Get-Process -Name 'celmux-desktop-qt', 'celmux-desktop-host' -ErrorAction SilentlyContinue | Stop-Process -Force
             Start-Sleep -Milliseconds 700
-            $scenario = Start-Process -FilePath "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -ArgumentList '--window-command-smoke-test', '--fixture-case', $case -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/dashboard-$case.json" -RedirectStandardError "$PWD/dist/dashboard-$case.stderr" -PassThru -Wait
+            $scenarioExit = Invoke-QtSmoke -Exe "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -Arguments @('--window-command-smoke-test', '--fixture-case', $case) -StdOut "$PWD/dist/dashboard-$case.json" -StdErr "$PWD/dist/dashboard-$case.stderr"
             Get-Content "dist/dashboard-$case.json"
             Get-Content "dist/dashboard-$case.stderr"
-            if ($scenario.ExitCode -ne 0) { throw "Qt dashboard $case smoke failed: $($scenario.ExitCode)" }
+            if ($scenarioExit -ne 0) { throw "Qt dashboard $case smoke failed: $scenarioExit" }
           }
           foreach ($case in @('normal', 'empty', 'partial')) {
             Get-Process -Name 'celmux-desktop-qt', 'celmux-desktop-host' -ErrorAction SilentlyContinue | Stop-Process -Force
             Start-Sleep -Milliseconds 700
-            $deviceUi = Start-Process -FilePath "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -ArgumentList '--device-ui-smoke-test', '--fixture-case', $case -WindowStyle Hidden -RedirectStandardOutput "$PWD/dist/device-$case.json" -RedirectStandardError "$PWD/dist/device-$case.stderr" -PassThru -Wait
+            $deviceExit = Invoke-QtSmoke -Exe "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -Arguments @('--device-ui-smoke-test', '--fixture-case', $case) -StdOut "$PWD/dist/device-$case.json" -StdErr "$PWD/dist/device-$case.stderr"
             Get-Content "dist/device-$case.json"
             Get-Content "dist/device-$case.stderr"
-            if ($deviceUi.ExitCode -ne 0) { throw "Qt deployed device UI $case smoke failed: $($deviceUi.ExitCode)" }
+            if ($deviceExit -ne 0) { throw "Qt deployed device UI $case smoke failed: $deviceExit" }
           }
           Get-Process -Name 'celmux-desktop-qt', 'celmux-desktop-host' -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Milliseconds 700
