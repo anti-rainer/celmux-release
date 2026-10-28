@@ -2,26 +2,31 @@
 rem Copyright (c) 2026 anti-rainer
 rem SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 rem
-rem Bind a module's QMI function to the WinUSB driver Windows already ships, so
-rem the service reaches the module the way Linux reaches /dev/cdc-wdm*.
+rem Binds the module's QMI (RMNET) function to the WinUSB driver Windows already
+rem ships, so the service can reach it. One script, one elevation prompt.
 rem
-rem The driver package sits in `driver\` next to this file: the INF template and
-rem `install-qmi-binding.ps1`, which finds the module's QMI function and signs
-rem its own catalog with a certificate generated on this machine. One folder is
-rem therefore enough - nothing has to be downloaded, and no Windows SDK tool is
-rem needed.
+rem The module's serial functions are left to the vendor's driver package
+rem (Quectel), which publishes them as COM ports. Binding them here made every
+rem install wait out a two-minute PnP timeout on the modem function.
+rem
+rem The driver package sits in `driver\` next to this file: the INF template
+rem and `install-module-driver.ps1`, which finds the module's function and
+rem signs its own catalog with a certificate generated on this machine. One
+rem folder is therefore enough - nothing has to be downloaded, and no Windows
+rem SDK tool is needed.
 rem
 rem Binding a driver package needs an administrator, so this asks for the one
 rem elevation prompt Windows requires and continues in that window. The same
-rem step is `celmux --install-qmi-binding`, and `driver\uninstall-qmi-binding.ps1`
-rem undoes it.
+rem step is `celmux --install-module-driver`, and
+rem `driver\uninstall-module-driver.ps1` undoes it.
 
 setlocal
+set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 cd /d "%~dp0"
 
-set "CELMUX_BINDING=%~dp0driver\install-qmi-binding.ps1"
+set "CELMUX_BINDING=%~dp0driver\install-module-driver.ps1"
 if not exist "%CELMUX_BINDING%" (
-    echo driver\install-qmi-binding.ps1 is missing from this folder.
+    echo driver\install-module-driver.ps1 is missing from this folder.
     echo Run install.ps1 here again to fetch the driver package.
     pause
     exit /b 1
@@ -35,22 +40,24 @@ rem the elevated window instead of installing for real.
 set "CELMUX_ELEVATE="
 if not "%~1"=="" set "CELMUX_ELEVATE=-ArgumentList '%*'"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }"
+"%PS%" -NoProfile -ExecutionPolicy Bypass -Command "if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }"
 if errorlevel 1 (
-    echo Binding a module's QMI function to WinUSB needs administrator rights.
+    echo Binding the module's USB functions needs administrator rights.
     echo Windows asks for them now; accept the prompt to continue.
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Start-Process -Verb RunAs -FilePath '%~f0' %CELMUX_ELEVATE% -ErrorAction Stop } catch { Write-Host 'Elevation was declined; nothing was installed.' }"
+    "%PS%" -NoProfile -ExecutionPolicy Bypass -Command "try { Start-Process -Verb RunAs -FilePath '%~f0' %CELMUX_ELEVATE% -ErrorAction Stop } catch { Write-Host 'Elevation was declined; nothing was installed.' }"
     exit /b
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%CELMUX_BINDING%" %*
+"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%CELMUX_BINDING%" %*
 set "CELMUX_RESULT=%errorlevel%"
 if not "%CELMUX_RESULT%"=="0" (
     echo.
     echo The binding did not finish; the lines above say why.
 ) else (
     echo.
-    echo The QMI function is bound to WinUSB. Start the service with start.bat.
+    echo The module's QMI function is bound to WinUSB. Start the service with
+    echo start.bat. Install the vendor's driver package if you also want the
+    echo module's AT and diagnostic COM ports.
 )
 pause
 exit /b %CELMUX_RESULT%

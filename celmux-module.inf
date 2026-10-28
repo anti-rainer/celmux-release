@@ -12,15 +12,17 @@
 ;
 ; This package contains no driver binary of its own: it references the WinUSB
 ; driver Microsoft ships with Windows, so the module keeps working with its
-; vendor's own tooling on every interface that is not listed here.
+; vendor's own tooling on every interface that is not listed here. The module's
+; serial functions are left to the vendor's driver package (Quectel), which
+; publishes them as COM ports; this package never binds them.
 
 [Version]
 Signature   = "$Windows NT$"
 Class       = USBDevice
 ClassGuid   = {88BAE032-5A81-49f0-BC3D-A4FF138216D6}
 Provider    = %ProviderName%
-CatalogFile = celmux-qmi.cat
-DriverVer   = 09/18/2026,1.0.0.0
+CatalogFile = celmux-module.cat
+DriverVer   = 10/25/2026,1.0.0.0
 PnpLockdown = 1
 
 [Manufacturer]

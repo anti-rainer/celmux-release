@@ -19,17 +19,18 @@
 # Nothing here registers a system service or an auto-start entry: the three
 # control scripts are the whole interface, and scheduling is the operator's.
 #
-# The downloaded executable is verified against the release's SHA256SUMS.txt
-# (falling back to the digest GitHub records for that asset) before anything
-# is installed. A mismatch aborts and deletes the file; a source that offers
-# no checksum at all is reported as a warning, and -From files are trusted
-# because they were already on this machine.
+# The downloaded executable is verified against the digest GitHub records for
+# that release asset, fetched from the API rather than from the download
+# channel, before anything is installed. A missing or mismatched digest aborts
+# and deletes the file; pass -Sha256 for a custom mirror. -From files are
+# trusted because they were already on this machine.
 
 [CmdletBinding()]
 param(
     [string]$Url = 'https://github.com/anti-rainer/celmux-release/releases/latest/download/celmux_win_amd64.exe',
     [string]$From,
-    [string]$RepoBase = 'https://raw.githubusercontent.com/anti-rainer/celmux-release/main',
+    [string]$RepoBase = '',
+    [string]$Sha256,
     [switch]$Force
 )
 
@@ -44,25 +45,10 @@ try {
 }
 
 function Get-RemoteFile($uri, $target) {
-    # The same accelerator the Linux installer uses: a direct GitHub fetch is
-    # slow or unreachable from some networks, and the proxy only ever sees the
-    # public release repository.
-    $proxy = if ($env:CELMUX_GITHUB_ACCELERATOR -ne $null) { $env:CELMUX_GITHUB_ACCELERATOR } else { 'https://v6.gh-proxy.org' }
-    try {
-        Invoke-WebRequest -Uri $uri -OutFile $target -UseBasicParsing
-        return
-    } catch {
-        $first = $_
-    }
-    if ($proxy) {
-        try {
-            Invoke-WebRequest -Uri ("{0}/{1}" -f $proxy.TrimEnd('/'), $uri) -OutFile $target -UseBasicParsing
-            return
-        } catch {
-            throw "download failed (direct: $($first.Exception.Message); accelerated: $($_.Exception.Message))"
-        }
-    }
-    throw $first
+    # Direct only. A third-party accelerator sits on the same trust path as
+    # the bytes it serves, so it cannot be used for anything this installer
+    # executes or trusts.
+    Invoke-WebRequest -Uri $uri -OutFile $target -UseBasicParsing
 }
 
 function Write-Step($message) {
@@ -70,31 +56,13 @@ function Write-Step($message) {
 }
 
 function Get-ReleaseHash($uri) {
-    # The release publishes SHA256SUMS.txt next to the assets. It is the only
-    # checksum a mirror carries - the accelerator that serves the download
-    # cannot answer for GitHub's API - so it is tried first, and GitHub's own
-    # per-asset digest is the fallback for a release published before the file
-    # existed.
+    # The digest is read from GitHub's API, a different endpoint from the
+    # asset download. A mirror or proxy that rewrites the binary cannot
+    # rewrite the digest it is checked against.
     $name = ($uri -split '/')[-1]
     if (-not $name) {
         return $null
     }
-    $sumsUri = $uri -replace '[^/]+$', 'SHA256SUMS.txt'
-    $sumsPath = Join-Path ([System.IO.Path]::GetTempPath()) ("celmux-sums-{0}.txt" -f [guid]::NewGuid())
-    try {
-        Get-RemoteFile $sumsUri $sumsPath
-        foreach ($line in (Get-Content -LiteralPath $sumsPath)) {
-            $parts = $line.Trim() -split '\s+'
-            if ($parts.Count -ge 2 -and $parts[1].TrimStart('*') -eq $name) {
-                return $parts[0].ToLowerInvariant()
-            }
-        }
-    } catch {
-        # No sums file in this release; the API below may still know the hash.
-    } finally {
-        Remove-Item -LiteralPath $sumsPath -ErrorAction SilentlyContinue
-    }
-
     $tag = $null
     if ($uri -match '/releases/latest/download/') {
         $tag = 'latest'
@@ -117,6 +85,16 @@ function Get-ReleaseHash($uri) {
         return $null
     }
     return $null
+}
+
+function Get-ReleaseTag {
+    try {
+        return (Invoke-RestMethod -UseBasicParsing `
+            -Uri 'https://api.github.com/repos/anti-rainer/celmux-release/releases/latest' `
+            -Headers @{ 'User-Agent' = 'celmux-installer'; 'Accept' = 'application/vnd.github+json' }).tag_name
+    } catch {
+        return $null
+    }
 }
 
 function New-Directory($path) {
@@ -194,16 +172,28 @@ Write-Step "Executable looks valid ($size MB)"
 if (-not $From) {
     $name = ($Url -split '/')[-1]
     Write-Step "Verifying the SHA-256 of $name"
-    $expected = Get-ReleaseHash $Url
+    $expected = if ($Sha256) { $Sha256.ToLowerInvariant() } else { Get-ReleaseHash $Url }
     if (-not $expected) {
-        Write-Warning "这个来源没有提供 $name 的 SHA-256 校验和，已跳过校验（旧版本发布或仅镜像了可执行文件）。"
+        Remove-Item -LiteralPath $binary -Force -ErrorAction SilentlyContinue
+        throw "无法从 GitHub API 取得 $name 的 SHA-256；拒绝安装未校验的可执行文件（自定义镜像请传 -Sha256）。"
+    }
+    $actual = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        Remove-Item -LiteralPath $binary -Force -ErrorAction SilentlyContinue
+        throw "校验失败：$name 的 SHA-256 是 $actual，发布的是 $expected。文件已删除，未安装任何东西。"
+    }
+    Write-Step "SHA-256 verified ($actual)"
+}
+
+# Driver scripts are fetched from the release tag, not from a moving branch.
+# The tag is resolved from the same API response; an explicit -RepoBase still
+# wins for a mirrored deployment.
+if (-not $RepoBase) {
+    $releaseTag = Get-ReleaseTag
+    if ($releaseTag) {
+        $RepoBase = "https://raw.githubusercontent.com/anti-rainer/celmux-release/$releaseTag"
     } else {
-        $actual = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actual -ne $expected) {
-            Remove-Item -LiteralPath $binary -Force -ErrorAction SilentlyContinue
-            throw "校验失败：$name 的 SHA-256 是 $actual，发布的是 $expected。文件已删除，未安装任何东西。"
-        }
-        Write-Step "SHA-256 verified ($actual)"
+        throw '无法确定发布版本 tag；拒绝从可变分支下载驱动脚本（可用 -RepoBase 指定）。'
     }
 }
 
@@ -237,7 +227,7 @@ $startLines = @(
     'rem already exited, and it is matched by path so another install is ignored.',
     'rem A restart calls this right after a stop, so an instance still tearing',
     'rem down is waited out instead of being mistaken for a live one.',
-    'powershell -NoProfile -ExecutionPolicy Bypass -Command "$root = $env:CELMUX_ROOT; $exe = Join-Path $root ''bin\celmux.exe''; $mine = { Get-Process -Name celmux -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $exe } }; $running = & $mine; if ($running) { $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue; $running = & $mine; if ($running) { Write-Host (''celmux is already running, pid '' + $running[0].Id); exit 0 } }; $p = Start-Process -FilePath $exe -WorkingDirectory $root -WindowStyle Hidden -PassThru; Write-Host (''celmux started, pid '' + $p.Id); Write-Host ''Web interface: https://127.0.0.1:7575''"'
+    '"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$root = $env:CELMUX_ROOT; $exe = Join-Path $root ''bin\celmux.exe''; $mine = { Get-Process -Name celmux -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $exe } }; $running = & $mine; if ($running) { $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue; $running = & $mine; if ($running) { Write-Host (''celmux is already running, pid '' + $running[0].Id); exit 0 } }; $p = Start-Process -FilePath $exe -WorkingDirectory $root -WindowStyle Hidden -PassThru; Write-Host (''celmux started, pid '' + $p.Id); Write-Host ''Web interface: https://127.0.0.1:7575''"'
 )
 Write-Ascii (Join-Path $root 'start.bat') $startLines
 
@@ -247,7 +237,7 @@ $stopLines = @(
     'setlocal',
     'set "CELMUX_EXE=%~dp0bin\celmux.exe"',
     'rem Match on the executable path, so an install in another folder is left alone.',
-    'powershell -NoProfile -ExecutionPolicy Bypass -Command "$t = $env:CELMUX_EXE; $p = Get-Process -Name celmux -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $t }; if (-not $p) { Write-Host ''celmux is not running from this folder''; exit 0 }; $p | ForEach-Object { Stop-Process -Id $_.Id -Force; Write-Host (''stopped celmux pid '' + $_.Id) }"'
+    '"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$t = $env:CELMUX_EXE; $p = Get-Process -Name celmux -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $t }; if (-not $p) { Write-Host ''celmux is not running from this folder''; exit 0 }; $p | ForEach-Object { Stop-Process -Id $_.Id -Force; Write-Host (''stopped celmux pid '' + $_.Id) }"'
 )
 Write-Ascii (Join-Path $root 'stop.bat') $stopLines
 
@@ -260,7 +250,7 @@ $restartLines = @(
     'rem A stopped instance can stay in the process list for a few seconds while',
     'rem Windows tears down its USB handles, so the wait is on the process and',
     'rem not on the clock.',
-    'powershell -NoProfile -ExecutionPolicy Bypass -Command "$t = $env:CELMUX_EXE; for ($i = 0; $i -lt 40; $i++) { $p = Get-Process -Name celmux -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $t }; if (-not $p) { exit 0 }; Start-Sleep -Milliseconds 500 }; Write-Host ''the previous instance did not exit; not starting a second one''; exit 1"',
+    '"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$t = $env:CELMUX_EXE; for ($i = 0; $i -lt 40; $i++) { $p = Get-Process -Name celmux -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq $t }; if (-not $p) { exit 0 }; Start-Sleep -Milliseconds 500 }; Write-Host ''the previous instance did not exit; not starting a second one''; exit 1"',
     'if errorlevel 1 exit /b 1',
     'call "%~dp0start.bat"'
 )
@@ -268,14 +258,14 @@ Write-Ascii (Join-Path $root 'restart.bat') $restartLines
 
 Write-Step 'Wrote start.bat, stop.bat and restart.bat'
 
-# The QMI binding lives with the service, because binding a module's QMI
-# function to WinUSB needs one elevated run and the operator should not have to
-# find the script in a repository. The package is the INF template plus the two
+# The module driver lives with the service, because binding a module's USB
+# functions needs one elevated run and the operator should not have to find
+# the script in a repository. The package is the two INF templates plus the two
 # scripts that install and remove the binding; `install-driver.bat` in the root
 # starts an elevated run of the installer. The service offers the same step as
-# `celmux --install-qmi-binding`, which looks for the script here.
+# `celmux --install-module-driver`, which looks for the script here.
 $driverDir = Join-Path $root 'driver'
-foreach ($file in 'install-qmi-binding.ps1', 'uninstall-qmi-binding.ps1', 'celmux-qmi.inf') {
+foreach ($file in 'install-module-driver.ps1', 'uninstall-module-driver.ps1', 'uninstall-driver.bat', 'celmux-module.inf') {
     $target = Join-Path $driverDir $file
     # Fetched every run, not only when missing: the binding scripts and the
     # service binary speak about the same hardware, and a stale copy in the
