@@ -733,6 +733,8 @@ jobs:
           $env:QT_PLUGIN_PATH = $null
           $env:QML_IMPORT_PATH = $null
           $env:QT_QPA_PLATFORM = 'windows'
+          $env:QT_OPENGL = 'software'
+          $env:QT_QUICK_BACKEND = 'software'
           & "$PWD/dist/qt-desktop-validation/celmux-desktop-host.exe" --ipc-smoke-test
           if ($LASTEXITCODE -ne 0) { throw 'Deployed backend IPC smoke failed' }
           $commandExit = Invoke-QtSmoke -Exe "$PWD/dist/qt-desktop-validation/celmux-desktop-qt.exe" -Arguments @('--window-command-smoke-test') -StdOut "$PWD/dist/dashboard-command.json" -StdErr "$PWD/dist/dashboard-command.stderr"
