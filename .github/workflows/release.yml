@@ -526,6 +526,8 @@ jobs:
           python-version: '3.12'
       - name: Install Qt build dependencies and SDK
         working-directory: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -648,6 +650,8 @@ jobs:
       - name: Install Qt 6.12 MSVC SDK
         shell: pwsh
         working-directory: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python -m pip install aqtinstall==3.3.0
           if ($LASTEXITCODE -ne 0) { throw 'aqtinstall installation failed' }
