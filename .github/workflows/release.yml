@@ -201,8 +201,8 @@ jobs:
         run: |
           set -eu
           drifted=''
-          for file in install.ps1 install-qmi-binding.ps1 uninstall-qmi-binding.ps1 \
-                      install-driver.bat uninstall-driver.bat celmux-module.inf install-module-driver.ps1 uninstall-module-driver.ps1; do
+          for file in install.ps1 install-driver.bat uninstall-driver.bat \
+                      celmux-module.inf install-module-driver.ps1 uninstall-module-driver.ps1; do
             if ! cmp -s "source/packaging/desktop/windows/$file" "$file"; then
               drifted="$drifted $file"
               echo "--- $file"
