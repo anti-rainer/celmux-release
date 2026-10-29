@@ -309,6 +309,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
+Group=root
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
 WorkingDirectory=${INSTALL_ROOT}
 ExecStart=${INSTALL_BIN} -c ${CONFIG_FILE}
 Restart=always
@@ -322,7 +326,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ProtectKernelTunables=true
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectControlGroups=true
 ProtectKernelLogs=true
