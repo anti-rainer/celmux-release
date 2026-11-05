@@ -50,6 +50,8 @@ runs:
     - name: Set the Node.js version up
       uses: actions/setup-node@v6
       with:
-        node-version: '24'
+        # The version the workspace is developed against; Vite 7 and the Vue
+        # toolchain both build on it.
+        node-version: '26'
         cache: npm
         cache-dependency-path: source/web/package-lock.json

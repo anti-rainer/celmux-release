@@ -1,9 +1,10 @@
-# The musl assets cross-build through zig: `-static-pie` plus the AMR-WB
-# wrapper object that cc-rs compiles is not position independent when it goes
-# through a musl gcc, and a plain `cargo build` then fails to link with
-# `relocation R_X86_64_32S ... can not be used when making a PIE object`.
-# zigbuild supplies a compiler that produces PIC objects and links with its own
-# LLD, which is also what the arm64 asset needs from the same archive.
+# The musl assets cross-build through zig: `-static-pie` plus the codec wrapper
+# objects that cc-rs compiles (AMR-WB, AMR-NB and Opus all come from vendored
+# sources) are not position independent when they go through a musl gcc, and a
+# plain `cargo build` then fails to link with `relocation R_X86_64_32S ... can
+# not be used when making a PIE object`. zigbuild supplies a compiler that
+# produces PIC objects and links with its own LLD, which is also what the arm64
+# asset needs from the same archive.
 name: install the zigbuild toolchain
 description: Zig, cargo-zigbuild and the musl target a linux asset builds with.
 
@@ -14,7 +15,7 @@ inputs:
   zig-version:
     description: Zig release to install
     required: false
-    default: '0.16.0'
+    default: '0.17.0'
   zigbuild-version:
     description: cargo-zigbuild release to install
     required: false
@@ -44,7 +45,8 @@ runs:
         mkdir -p "$zig_root"
         curl -fsSL -o /tmp/zig.tar.xz \
           "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-        echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  /tmp/zig.tar.xz" | sha256sum -c -
+        # The digest is the one ziglang.org publishes for this release.
+        echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  /tmp/zig.tar.xz" | sha256sum -c -
         rm -rf "$zig_dir"
         tar -xJf /tmp/zig.tar.xz -C "$zig_root"
         sudo ln -sf "$zig_dir/zig" /usr/local/bin/zig

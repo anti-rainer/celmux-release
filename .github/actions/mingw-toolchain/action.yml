@@ -1,6 +1,6 @@
-# The Windows assets cross-build on 24.04 because the EVS codec is compiled
-# with `-mdirect-extern-access`, an option GCC only grew in 12: 22.04 ships
-# mingw-w64 10, 24.04 ships 13.
+# The Windows assets cross-build on 24.04: the vendored AMR-WB sources are C++
+# and need a compiler new enough to build them as C++14, which is what MSVC's
+# lowest conforming mode also accepts. 22.04 ships mingw-w64 10, 24.04 ships 13.
 name: install the mingw toolchain
 description: mingw-w64 and the windows-gnu target a windows asset builds with.
 
