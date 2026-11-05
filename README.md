@@ -1,18 +1,18 @@
 # Celmux
 
-## 安装（Linux）
+## 安装（Linux服务端）
 
 ```sh
 curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo sh
 ```
 
-## 卸载（Linux）
+## 卸载（Linux服务端）
 
 ```sh
 curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo sh
 ```
 
-## 安装（Windows）
+## 安装（Windows服务端）
 
 在一个准备用作运行目录的文件夹里打开 PowerShell，执行：
 
@@ -21,42 +21,8 @@ curl.exe -fsSL -o install.ps1 https://raw.githubusercontent.com/anti-rainer/celm
 powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 ```
 
-脚本把当前目录作为运行目录：
+## 安装Windows桌面端
 
-下载完成后 `install.ps1` 会先把这个可执行文件的 SHA-256 与本次发布的
-`SHA256SUMS.txt` 比对（旧发布没有这个文件时改用 GitHub 记录的资产摘要），
-不一致就直接中止并删除文件。桌面端的 `celmux_win_amd64_desktop.exe` 可以
-用同样的清单手工核对：
-
-```powershell
-certutil -hashfile celmux_win_amd64_desktop.exe SHA256
-```
-
-校验和只证明"下载到的就是这次发布上传的文件"，并不等于 Windows 的
-Authenticode 签名——本项目没有付费代码签名证书，所以安装时仍会显示未知
-发布者。
-
-```text
-运行目录/
-├── bin/
-│   └── celmux.exe                  服务端
-├── config/
-│   └── celmux.yaml                 初始账密 admin/admin，密码保存为 bcrypt 哈希
-├── data/
-├── driver/
-│   ├── celmux-qmi.inf
-│   ├── install-qmi-binding.ps1
-│   └── uninstall-qmi-binding.ps1
-├── logs/
-│   └── app.log
-├── install-driver.bat              绑定模组的 QMI 功能到 WinUSB
-├── start.bat
-├── stop.bat
-└── restart.bat
-```
-
-网页界面在 `https://127.0.0.1:7575`。模组的 QMI 功能若尚未绑定到 WinUSB，双击
-`install-driver.bat` 即可（现场自签证书，不需要证书机构或 Windows SDK），撤销绑定用
-`driver\uninstall-qmi-binding.ps1`。脚本与驱动资源来自
-[`anti-rainer/celmux`](https://github.com/anti-rainer/celmux)，服务端二进制取本仓库的最新
-Release。
+在release中下载带有desktop的exe文件进行安装
+安装完成第一步是在软件的系统设置里点击安装驱动
+此驱动功能是将模块的qmi接口绑定到winusb上，可供软件使用qmi功能，此驱动没有绑定AT接口的能力，如需AT操作能力，请安装移远官方驱动
