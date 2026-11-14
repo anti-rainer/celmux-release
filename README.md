@@ -1,18 +1,34 @@
 # Celmux
 
-## 安装（Linux服务端）
+面向高通 4G/LTE/5G 模组（Quectel EC20/EC25/EC21/EG25/EM20 等）的综合管理与代理服务平台。
+
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0)
+[![Rust](https://img.shields.io/badge/Rust-1.97.1-000000?logo=rust)](https://github.com/anti-rainer/celmux)
+[![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js)](https://github.com/anti-rainer/celmux)
+
+## 文档
+
+| 文档 | |
+| --- | --- |
+| [插件开发](docs/plugin/index.zh.md) | [Plugin](docs/plugin/index.md) |
+| [免责声明](DISCLAIMER.md) | [安全策略](SECURITY.md) |
+| [第三方声明](THIRD_PARTY_NOTICES.md) | [许可证](LICENSE) |
+
+## 安装
+
+### Linux
 
 ```sh
 curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/install.sh | sudo sh
 ```
 
-## 卸载（Linux服务端）
+卸载：
 
 ```sh
 curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/anti-rainer/celmux-release/main/uninstall.sh | sudo sh
 ```
 
-## 安装（Windows服务端）
+### Windows
 
 在一个准备用作运行目录的文件夹里打开 PowerShell，执行：
 
@@ -21,8 +37,14 @@ curl.exe -fsSL -o install.ps1 https://raw.githubusercontent.com/anti-rainer/celm
 powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 ```
 
-## 安装Windows桌面端
+### Windows 桌面端
 
-在release中下载带有desktop的exe文件进行安装
-安装完成第一步是在软件的系统设置里点击安装驱动
-此驱动功能是将模块的qmi接口绑定到winusb上，可供软件使用qmi功能，此驱动没有绑定AT接口的能力，如需AT操作能力，请安装移远官方驱动
+在 [Releases](../../releases) 中下载带 `desktop` 的 exe 安装。
+
+安装后第一步：在软件的系统设置里点击安装驱动。
+
+该驱动将模组的 qmi 接口绑定到 winusb，供软件使用 qmi 功能。此驱动不具备 AT 接口绑定能力，如需 AT 操作，请安装移远官方驱动。
+
+## License
+
+PolyForm Noncommercial License 1.0.0，详见 [LICENSE](LICENSE)。
